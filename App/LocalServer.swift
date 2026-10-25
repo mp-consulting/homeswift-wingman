@@ -2,6 +2,18 @@ import CryptoKit
 import Foundation
 import Network
 
+@MainActor
+protocol WingmanStore: AnyObject {
+    var homeIdentifiers: [String] { get }
+    var lastSeq: Int { get }
+    var firstSeq: Int { get }
+    func statusJSON() -> [String: Any]
+    func homesJSON() -> [[String: Any]]
+    func eventsJSON(since: Int?) -> [[String: Any]]
+    func readAll() async -> [String: Any]
+    func write(accessory: String, characteristic: String, value: Any) async -> [String: Any]
+}
+
 /// A JSON API over TLS on every interface, advertised over Bonjour as `_homeswift-wingman._tcp`, for a Homeswift
 /// plugin to find, pair with and read:
 ///
@@ -21,9 +33,31 @@ final class LocalServer {
     static let serviceType = "_homeswift-wingman._tcp"
     static let apiVersion = "1"
 
-    private let store: HomeStore
+    private let store: any WingmanStore
     private let pairing: Pairing
-    private let identity: Identity
+    private let makeParameters: () -> NWParameters
+    private let configuration: () -> Configuration
+    private let changesAllowed: () -> Bool
+    struct Configuration: Equatable { var port: UInt16; var advertise: Bool }
+    struct Limits {
+        var connections = 64
+        var requestSeconds: Double = 10
+        var responseSeconds: Double = 90
+    }
+    private let limits: Limits
+    private final class Client {
+        let connection: NWConnection
+        var bridgeID: String?
+        var deadline: Task<Void, Never>?
+        var poll: Task<Void, Never>?
+        var work: Task<Void, Never>?
+        init(_ connection: NWConnection) { self.connection = connection }
+    }
+    private var clients: [ObjectIdentifier: Client] = [:]
+    var activeConnections: Int { clients.count }
+    var pendingPolls: Int { waiting.count }
+    var boundPort: UInt16? { listener?.port?.rawValue }
+    private var generation = UUID()
     private(set) var port: UInt16
     private var advertising = true
     private var listener: NWListener?
@@ -33,39 +67,62 @@ final class LocalServer {
     private(set) var state = "starting"
     var onChange: (() -> Void)?
     /// The certificate's SHA-256 (lowercase hex), for the menu bar panel.
-    var fingerprint: String { identity.fingerprint }
+    let fingerprint: String
 
-    init(store: HomeStore, pairing: Pairing, identity: Identity) {
+    convenience init(store: any WingmanStore, pairing: Pairing, identity: Identity) {
+        self.init(store: store, pairing: pairing, fingerprint: identity.fingerprint,
+                  configuration: { Configuration(port: Settings.port, advertise: Settings.advertise) },
+                  changesAllowed: { Settings.allowChanges }, makeParameters: {
+            let tls = NWProtocolTLS.Options()
+            sec_protocol_options_set_local_identity(tls.securityProtocolOptions, sec_identity_create(identity.identity)!)
+            sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
+            return NWParameters(tls: tls)
+        })
+    }
+
+    /// Dependency injection keeps network tests on loopback without HomeKit, defaults or Keychain access.
+    init(store: any WingmanStore, pairing: Pairing, fingerprint: String,
+         configuration: @escaping () -> Configuration, changesAllowed: @escaping () -> Bool,
+         limits: Limits = Limits(), makeParameters: @escaping () -> NWParameters) {
         self.store = store
         self.pairing = pairing
-        self.identity = identity
-        port = Settings.port
+        self.fingerprint = fingerprint
+        self.configuration = configuration
+        self.changesAllowed = changesAllowed
+        self.limits = limits
+        self.makeParameters = makeParameters
+        port = configuration().port
+        pairing.onRemove = { [weak self] id in self?.revoke(id) }
     }
 
     /// Starts again when the port or Bonjour setting changed.
     func applySettings() {
-        guard Settings.port != port || Settings.advertise != advertising else { return }
-        listener?.cancel()
-        listener = nil
+        let desired = configuration()
+        guard desired != Configuration(port: port, advertise: advertising) || state != "listening" else { return }
         start()
     }
 
     func start() {
-        port = Settings.port
-        advertising = Settings.advertise
-        let tls = NWProtocolTLS.Options()
-        sec_protocol_options_set_local_identity(tls.securityProtocolOptions, sec_identity_create(identity.identity)!)
-        sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
-        let parameters = NWParameters(tls: tls)
-        parameters.allowLocalEndpointReuse = true
+        stop()
+        let desired = configuration()
+        port = desired.port
+        advertising = desired.advertise
+        state = "starting"
+        onChange?()
+        let currentGeneration = generation
+        let parameters = makeParameters()
         do {
             let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
             if advertising { listener.service = service() }
             listener.newConnectionHandler = { [weak self] connection in
-                MainActor.assumeIsolated { self?.accept(connection) }
+                MainActor.assumeIsolated {
+                    guard let self, self.generation == currentGeneration else { connection.cancel(); return }
+                    self.accept(connection)
+                }
             }
             listener.stateUpdateHandler = { [weak self] state in
                 MainActor.assumeIsolated {
+                    guard self?.generation == currentGeneration else { return }
                     switch state {
                     case .ready: self?.state = "listening"
                     case .cancelled: return
@@ -83,10 +140,11 @@ final class LocalServer {
             }
             listener.start(queue: .main)
             self.listener = listener
-            NSLog("Wingman: serving on https://*:\(port), certificate SHA-256 \(identity.fingerprint)")
+            NSLog("Wingman: serving on https://*:\(port), certificate SHA-256 \(fingerprint)")
         } catch {
             state = "cannot listen on \(port): \(error)"
             NSLog("Wingman: cannot listen on \(port): \(error)")
+            onChange?()
         }
     }
 
@@ -97,7 +155,7 @@ final class LocalServer {
     }
 
     private var homeHash: String {
-        let ids = store.homes.map(\.uniqueIdentifier.uuidString).sorted().joined(separator: ",")
+        let ids = store.homeIdentifiers.sorted().joined(separator: ",")
         guard !ids.isEmpty else { return "" }
         return String(SHA256.hash(data: Data(ids.utf8)).map { String(format: "%02x", $0) }.joined().prefix(16))
     }
@@ -111,42 +169,72 @@ final class LocalServer {
         return NWListener.Service(type: Self.serviceType, txtRecord: txt)
     }
 
+    func stop() {
+        generation = UUID()
+        listener?.cancel()
+        listener = nil
+        for client in Array(clients.values) { close(client.connection) }
+        state = "stopped"
+    }
+
+    private func close(_ connection: NWConnection) {
+        let client = clients.removeValue(forKey: ObjectIdentifier(connection))
+        client?.deadline?.cancel()
+        client?.poll?.cancel()
+        client?.work?.cancel()
+        waiting.removeAll { $0.connection === connection }
+        connection.stateUpdateHandler = nil
+        connection.cancel()
+    }
+
+    private func revoke(_ bridgeID: String) {
+        for client in Array(clients.values) where client.bridgeID == bridgeID { close(client.connection) }
+    }
+
+    private func deadline(_ connection: NWConnection, seconds: Double) {
+        guard let client = clients[ObjectIdentifier(connection)] else { return }
+        client.deadline?.cancel()
+        client.deadline = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+            self?.close(connection)
+        }
+    }
+
     private func accept(_ connection: NWConnection) {
+        guard clients.count < limits.connections else { connection.cancel(); return }
+        clients[ObjectIdentifier(connection)] = Client(connection)
+        connection.stateUpdateHandler = { [weak self] state in
+            MainActor.assumeIsolated {
+                switch state {
+                case .failed, .cancelled: self?.close(connection)
+                default: break
+                }
+            }
+        }
         connection.start(queue: .main)
+        // Includes the TLS handshake and the entire request, not a sliding idle timeout.
+        deadline(connection, seconds: limits.requestSeconds)
         receive(connection, buffer: Data())
     }
 
     private func receive(_ connection: NWConnection, buffer: Data) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: HTTPRequest.maximumBytes + 1) { [weak self] data, _, isComplete, error in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.clients[ObjectIdentifier(connection)] != nil else { return }
                 var buffer = buffer
                 if let data { buffer.append(data) }
-                if let end = buffer.range(of: Data("\r\n\r\n".utf8)) {
-                    let head = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)
-                    let body = buffer[end.upperBound...]
-                    if body.count >= Self.contentLength(head) {
-                        self.respond(to: head, body: Data(body), on: connection)
-                        return
-                    }
-                }
-                if isComplete || error != nil || buffer.count > 65_536 {
-                    connection.cancel()
-                } else {
-                    self.receive(connection, buffer: buffer)
+                switch HTTPRequest.parse(buffer) {
+                case .complete(let head, let body):
+                    self.deadline(connection, seconds: self.limits.responseSeconds)
+                    self.respond(to: head, body: body, on: connection)
+                case .invalid(let status):
+                    self.send(["error": "Invalid or oversized HTTP request"], status: status, on: connection)
+                case .incomplete:
+                    if isComplete || error != nil { self.close(connection) }
+                    else { self.receive(connection, buffer: buffer) }
                 }
             }
         }
-    }
-
-    private static func contentLength(_ head: String) -> Int {
-        for line in head.split(separator: "\r\n").dropFirst() {
-            let parts = line.split(separator: ":", maxSplits: 1)
-            if parts.count == 2, parts[0].lowercased() == "content-length" {
-                return Int(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
-            }
-        }
-        return 0
     }
 
     private func respond(to head: String, body: Data, on connection: NWConnection) {
@@ -161,7 +249,7 @@ final class LocalServer {
             send([
                 "service": "homeswift-wingman", "api": Self.apiVersion, "id": pairing.wingmanID,
                 "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
-                "fingerprint": identity.fingerprint, "pairing": pairing.open != nil,
+                "fingerprint": fingerprint, "pairing": pairing.open != nil,
             ], on: connection)
             return
         case ("POST", "/pair"):
@@ -169,11 +257,12 @@ final class LocalServer {
             return
         default: break
         }
-        guard let token = Self.bearer(lines), pairing.bridge(token: token) != nil else {
+        guard let token = Self.bearer(lines), let bridge = pairing.bridge(token: token) else {
             send(["error": "pair first: POST /pair with the code Wingman's menu shows, then send Authorization: Bearer <token>"],
                  status: "401 Unauthorized", on: connection)
             return
         }
+        clients[ObjectIdentifier(connection)]?.bridgeID = bridge.id
         switch (method, path) {
         case ("GET", "/status"):
             var status = store.statusJSON()
@@ -182,25 +271,35 @@ final class LocalServer {
         case ("GET", "/homes"): send(["homes": store.homesJSON()], on: connection)
         case ("GET", "/events"):
             guard let since = query["since"].flatMap(Int.init) else {
-                send(["events": store.eventsJSON(), "last": store.lastSeq, "first": store.firstSeq], on: connection)
+                send(["events": store.eventsJSON(since: nil), "last": store.lastSeq, "first": store.firstSeq], on: connection)
                 return
             }
             // Long-poll: answered now when there is something newer, else at the next change or after `wait` seconds.
-            let wait = min(max(query["wait"].flatMap(Double.init) ?? 0, 0), 30)
+            guard let wait = HTTPRequest.waitSeconds(query["wait"]) else {
+                send(["error": "wait must be a finite number"], status: "400 Bad Request", on: connection)
+                return
+            }
             if store.lastSeq > since || wait == 0 {
                 send(["events": store.eventsJSON(since: since), "last": store.lastSeq, "first": store.firstSeq], on: connection)
             } else {
                 let id = UUID()
                 waiting.append((id, since, connection))
-                Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(wait))
+                // No second request is accepted. Observe EOF while waiting so disconnected polls release their slot.
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] _, _, _, _ in
+                    MainActor.assumeIsolated { self?.close(connection) }
+                }
+                clients[ObjectIdentifier(connection)]?.poll = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(wait)) } catch { return }
                     self?.answerWaiting(id)
                 }
             }
         case ("POST", "/read"):
-            Task { send(await store.readAll(), on: connection) }
+            clients[ObjectIdentifier(connection)]?.work = Task {
+                guard !Task.isCancelled, pairing.contains(bridge.id) else { close(connection); return }
+                send(await store.readAll(), on: connection)
+            }
         case ("POST", "/write"):
-            guard Settings.allowChanges else {
+            guard changesAllowed() else {
                 send(["error": "changes are turned off in Wingman's settings"], status: "403 Forbidden", on: connection)
                 return
             }
@@ -211,7 +310,8 @@ final class LocalServer {
                 send(["error": #"expected {"accessory", "characteristic", "value"}"#], status: "400 Bad Request", on: connection)
                 return
             }
-            Task {
+            clients[ObjectIdentifier(connection)]?.work = Task {
+                guard !Task.isCancelled, pairing.contains(bridge.id), changesAllowed() else { close(connection); return }
                 let result = await store.write(accessory: accessory, characteristic: characteristic, value: value)
                 send(result, status: result["error"] == nil ? "200 OK" : "422 Unprocessable Content", on: connection)
             }
@@ -249,7 +349,9 @@ final class LocalServer {
         switch pairing.pair(code: code, name: name) {
         case .paired(let token, let bridge):
             NSLog("Wingman: paired \(bridge.name) from \(Self.describe(connection.endpoint))")
-            send(["token": token, "bridge": bridge.id, "wingman": pairing.wingmanID, "fingerprint": identity.fingerprint], on: connection)
+            send(["token": token, "bridge": bridge.id, "wingman": pairing.wingmanID, "fingerprint": fingerprint], on: connection)
+        case .storageFailure:
+            send(["error": "Cannot persist pairing; check Wingman and retry"], status: "500 Internal Server Error", on: connection)
         case .notOpen:
             send(["error": "pairing is not open: choose Pair a Homeswift Bridge in Wingman's menu"], status: "403 Forbidden", on: connection)
         case .wrongCode(let closed):
@@ -275,9 +377,13 @@ final class LocalServer {
     }
 
     private func send(_ json: Any, status: String = "200 OK", on connection: NWConnection) {
+        guard let client = clients[ObjectIdentifier(connection)] else { return }
+        if let id = client.bridgeID, !pairing.contains(id) { close(connection); return }
         let body = (try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])) ?? Data("{}".utf8)
         var response = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
         response.append(body)
-        connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+        connection.send(content: response, completion: .contentProcessed { [weak self] _ in
+            MainActor.assumeIsolated { self?.close(connection) }
+        })
     }
 }

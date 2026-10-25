@@ -6,7 +6,8 @@ import UIKit
 /// Every accessory gets this store as its delegate and notifications on the characteristics that send events, so
 /// `events` shows whether HomeKit keeps pushing changes while the app sits in the menu bar.
 @MainActor
-final class HomeStore: NSObject {
+final class HomeStore: NSObject, WingmanStore {
+    var homeIdentifiers: [String] { homes.map(\.uniqueIdentifier.uuidString) }
     struct Event {
         /// Counts from 1 for the app's life: `GET /events?since=` answers the newer ones.
         let seq: Int

@@ -8,8 +8,32 @@ All notable changes to this project are documented here. The format follows
 
 The first version, 0.2.0 in `project.yml`, not released yet.
 
+### Fixed
+
+- Reject non-finite event wait durations and malformed or oversized HTTP requests; bound connection counts and request lifetimes.
+- Persist pairing and removal transactionally, report storage failures, and cancel a removed bridge's pending requests.
+- Save last-seen timestamps periodically even when bridges poll frequently; allow retrying a failed listener on the same port.
+- Preserve room expansion by HomeKit UUID across renames and sorting changes.
+- Test and snapshot the actual AppKit panel with synthetic data; remove the obsolete standalone SwiftUI interface.
+- First launch no longer waits for hostname resolution when creating the TLS certificate.
+- Build installation selects the requested Debug or Release product when both exist.
+
+### Changed
+
+- Add daily update checks, release notes, download progress and signature-verified installation with relaunch. Sign release disk images for the updater.
+
+- Adopt the winged-house icon for the app, menu bar and panel header.
+
+- Open Home, Bridges and Settings in a borderless panel beneath the menu-bar icon, matching apple-mail-mcp’s layout.
+- Check port availability while editing, with inline validation and Apply blocked for invalid or occupied ports.
+- Use native Liquid Glass for the panel and action buttons on macOS 26+, with a material fallback on older systems.
+- Refine the panel with a compact layout, pill navigation, clearer section hierarchy and accessible contrast.
+- Named Homeswift Wingman; it began as a spike called Homeswift Sidecar, which served plain JSON on 127.0.0.1.
+
 ### Added
 
+- `bin/dev` commands for local builds, provisioning, launch, restart, status, logs and tool checks, using a source
+  copy outside Documents to avoid Xcode file-coordination stalls.
 - A Mac Catalyst menu bar app that reads the Home app's homes, rooms, zones, scenes and accessories through HomeKit,
   follows their value changes, and writes values, refusing lock, garage door and alarm targets.
 - A JSON API over TLS on every interface (port 8619): `/info`, `/pair`, `/status`, `/homes` (ids, HomeKit's ranges,
@@ -17,14 +41,10 @@ The first version, 0.2.0 in `project.yml`, not released yet.
   `/read`, `/write` (by characteristic id).
 - Bonjour: `_homeswift-wingman._tcp`, with the API version, Wingman's id and a hash of its homes in the TXT record.
 - TLS with a self-signed P-256 certificate made at the first launch and kept in the keychain; bridges pin it.
-- Pairing: a six-digit code for ten minutes from the menu or the window; a token per bridge, kept only as its
-  SHA-256; five wrong codes close the pairing; the window removes a bridge.
-- A window with Liquid Glass on macOS 26, after apple-mail-mcp's panel: Home, Bridges and Settings (Bonjour, the port,
-  whether bridges may change accessories, open at login). `--snapshot DIR` draws it to PNG.
+- Pairing: a six-digit code for ten minutes from the panel; a token per bridge, kept only as its
+  SHA-256; five wrong codes close the pairing; the panel removes a bridge.
+- A menu-bar panel with Liquid Glass on macOS 26: Home, Bridges and Settings (Bonjour, the port,
+  whether bridges may change accessories, open at login). `Scripts/test.sh` renders synthetic panel snapshots.
 - `Scripts/release.sh` and `Scripts/make-dmg.sh`: a development-signed disk image and its GitHub release, for the
   Homebrew cask `mp-consulting/tap/homeswift-wingman`.
-- CI: Debug and Release built unsigned on every push, the window's snapshots kept as an artifact.
-
-### Changed
-
-- Named Homeswift Wingman; it began as a spike called Homeswift Sidecar, which served plain JSON on 127.0.0.1.
+- CI: Debug and Release built unsigned on every push, regression tests and actual panel snapshots required, with images kept as artifacts.

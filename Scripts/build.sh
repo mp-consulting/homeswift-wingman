@@ -30,7 +30,7 @@ xcodebuild -project HomeswiftWingman.xcodeproj -scheme HomeswiftWingman -configu
     -destination 'platform=macOS,variant=Mac Catalyst' -derivedDataPath "$CACHE/build" $PROVISIONING \
     $SIGNING -quiet build
 
-BUILT="$(find "$CACHE/build/Build/Products" -maxdepth 2 -name 'HomeswiftWingman.app' -path '*maccatalyst*' | head -n 1)"
+BUILT="$CACHE/build/Build/Products/${CONFIGURATION:-Debug}-maccatalyst/HomeswiftWingman.app"
 rm -rf "$APP"
 mkdir -p "$(dirname "$APP")"
 ditto "$BUILT" "$APP"

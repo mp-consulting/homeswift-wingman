@@ -15,11 +15,26 @@ HomeKit exists on the Mac only for Mac Catalyst apps (the Home app is one), so W
 brew install --cask mp-consulting/tap/homeswift-wingman
 ```
 
-Open it, allow access to Home data, and a bird appears in the menu bar. Wingman is signed for development (HomeKit is
+Open it, allow access to Home data, and a winged house appears in the menu bar. Wingman is signed for development (HomeKit is
 not available to Developer ID apps, see [Signing](#signing-no-developer-id-no-notarization)): it runs only on the Macs
 registered in its developer's team, and macOS asks once before opening it (System Settings › Privacy & Security › Open
 Anyway). Releases are made on such a Mac with `Scripts/release.sh`, which builds the version in `project.yml` signed,
 packs `HomeswiftWingman-<version>.dmg`, tags it and creates the GitHub release; the tap's cask follows within 6 hours.
+
+## Updates
+
+Settings includes **Check for Updates…**, automatic daily checks, release notes and **Install & Relaunch**.
+Wingman downloads the latest GitHub release with progress, verifies the disk image and app against the
+publisher’s Apple signing team and bundle identifier, checks the version, then replaces the app and relaunches.
+The app must be installed on a writable disk and signed by Wingman’s developer. Development-signed releases
+still require this Mac to be registered with the team. Older unsigned disk images cannot be installed by the updater.
+
+The winged-house artwork is drawn by `MenuBar/WingmanIcon.swift`; regenerate app icon assets with:
+
+```sh
+swiftc MenuBar/WingmanIcon.swift Scripts/generate-icon.swift -o /tmp/wingman-icon
+/tmp/wingman-icon
+```
 
 ## Pair a Homeswift bridge
 
@@ -94,16 +109,37 @@ service and characteristic an `id` (HomeKit's `uniqueIdentifier`), HomeKit's ran
 
 ## Building
 
+For local development, run these from the checkout:
+
+```sh
+bin/dev run                        # build, install and launch
+bin/dev provision                  # first build: allow Xcode provisioning updates
+bin/dev status                     # running process and local API health
+bin/dev logs                       # stream app logs
+bin/dev restart                    # restart without rebuilding
+bin/dev doctor                     # check tools and signing identities
+bin/dev help                       # all commands, including build, unsigned, open and stop
+CONFIGURATION=Release bin/dev run   # test a Release build
+```
+
+`bin/dev` builds a source copy in `~/Library/Caches/HomeswiftWingman/source` to avoid Xcode file-coordination
+stalls in Documents. Edit this checkout, not the copy; each build refreshes it. App data and pairings are preserved.
+`info` and `status` query port 8619 by default; set `WINGMAN_PORT` to query a different port configured in the app.
+If provisioning reports a missing HomeKit entitlement, open the generated project in the source copy in Xcode
+and check Signing & Capabilities once, then retry `bin/dev provision`.
+
+The underlying build script is also available:
+
 ```sh
 Scripts/build.sh --unsigned          # compile only (an unsigned build has no keychain, so it serves nothing)
 PROVISION=1 Scripts/build.sh         # first signed build: Xcode registers the App ID, this Mac and a development profile
 Scripts/build.sh --install           # ~/Applications/Homeswift Wingman.app, launched
-open "Homeswift Wingman.app" --args --snapshot DIR   # draws each tab of the window to PNG, dark and light, then quits
+Scripts/test.sh /tmp/wingman-snapshots   # isolated regression tests and actual panel PNGs, dark and light
 ```
 
 `Scripts/build.sh` generates the Xcode project with XcodeGen (`project.yml`) and builds outside the repository. Launch
 the app with `open` (or from Finder): started from a shell, macOS checks the shell's Info.plist for the HomeKit usage
-text and kills the app. CI builds Debug and Release unsigned on every push and keeps the window's snapshots.
+text and kills the app. CI builds Debug and Release unsigned on every push and keeps the menu-bar panel's snapshots.
 
 ## Signing: no Developer ID, no notarization
 
@@ -151,3 +187,22 @@ cannot ship this app with HomeKit. The ways out:
 
 MIT, see [LICENSE](LICENSE). [CONTRIBUTING.md](CONTRIBUTING.md) says how to build and propose a change;
 [CHANGELOG.md](CHANGELOG.md) lists what changed.
+
+## Menu-bar panel
+
+Click the Wingman winged house in the macOS menu bar to open its borderless panel directly beneath the icon, matching
+apple-mail-mcp’s compact header, pill tabs, sectioned rows and footer. Home, Bridges and Settings stay in this panel, including pairing; click outside or press
+Escape to dismiss it. Snapshots render this same AppKit panel with synthetic fixtures; they never load real homes, pairings or Keychain data.
+
+## Regression tests
+
+Run `Scripts/test.sh /tmp/wingman-snapshots` on macOS with Xcode installed. Tests compile the production parser,
+server, pairing store and AppKit panel. Storage is temporary; the network server binds loopback with a fake
+HomeKit store and no Bonjour. Production still requires its Keychain TLS identity. No real accessories or
+pairings are changed. CI runs the tests and requires all eight light/dark panel snapshots to render. These
+bitmap fixtures verify layout; macOS composites native glass separately, so inspect the installed panel
+when reviewing its glass appearance.
+
+Requests are limited to 64 connections, 16 KiB of headers and 64 KiB total. A connection has ten seconds to
+complete its TLS handshake and request; responses are bounded to 90 seconds. Removing a paired bridge cancels
+its pending requests. Pairing and removal report storage failures instead of claiming success.

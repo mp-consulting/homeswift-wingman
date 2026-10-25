@@ -1,7 +1,6 @@
 import Foundation
 
-/// Wingman's settings, in the app's user defaults: the window writes them (`@AppStorage`) and says "settings", and
-/// the server applies them.
+/// Wingman’s settings in user defaults. MenuBarBridge applies edits from the AppKit panel.
 enum Settings {
     static let advertiseKey = "advertise"
     static let portKey = "port"

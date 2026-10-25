@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Security
+import Darwin
 
 /// Which Homeswift bridges may use the API, and the pairing that adds one.
 ///
@@ -28,18 +29,35 @@ final class Pairing {
     static let maximumFailures = 5
 
     var onChange: (() -> Void)?
+    var onRemove: ((String) -> Void)?
+    private(set) var persistenceError: String?
+    private let now: () -> Date
+    private let writeFile: (Data, URL) throws -> Void
+    private var lastSavedSeen: [String: Date] = [:]
     private(set) var bridges: [Bridge] = []
     private(set) var open: Open?
     private var closing: Timer?
     private let file: URL
 
-    init() {
-        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.mpconsulting.HomeswiftWingman", isDirectory: true)
+    init(directory: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.mpconsulting.HomeswiftWingman", isDirectory: true),
+         now: @escaping () -> Date = Date.init,
+         writeFile: @escaping (Data, URL) throws -> Void = Pairing.write) {
+        self.now = now
+        self.writeFile = writeFile
         file = directory.appendingPathComponent("bridges.json")
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        if let data = try? Data(contentsOf: file) { bridges = (try? decoder.decode([Bridge].self, from: data)) ?? [] }
+        do {
+            bridges = try decoder.decode([Bridge].self, from: Data(contentsOf: file))
+            lastSavedSeen = Dictionary(uniqueKeysWithValues: bridges.compactMap { bridge in
+                bridge.lastSeenAt.map { (bridge.id, $0) }
+            })
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            // First launch.
+        } catch {
+            persistenceError = "Cannot load paired bridges. Check access to the application data folder."
+        }
     }
 
     /// Wingman's own id, for the Bonjour TXT record and `/info`: made once, kept with the bridges.
@@ -47,7 +65,7 @@ final class Pairing {
         let url = file.deletingLastPathComponent().appendingPathComponent("id")
         if let id = try? String(contentsOf: url, encoding: .utf8), !id.isEmpty { return id }
         let id = UUID().uuidString.lowercased()
-        try? write(Data(id.utf8), to: url)
+        try? writeFile(Data(id.utf8), url)
         return id
     }()
 
@@ -55,7 +73,7 @@ final class Pairing {
 
     func openPairing() {
         let code = String(format: "%06d", Int.random(in: 0..<1_000_000))
-        open = Open(code: code, until: Date().addingTimeInterval(Self.codeLifetime))
+        open = Open(code: code, until: now().addingTimeInterval(Self.codeLifetime))
         closing?.invalidate()
         closing = Timer.scheduledTimer(withTimeInterval: Self.codeLifetime, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.closePairing() }
@@ -72,12 +90,13 @@ final class Pairing {
 
     enum PairResult {
         case paired(token: String, bridge: Bridge)
+        case storageFailure
         case notOpen
         case wrongCode(closed: Bool)
     }
 
     func pair(code: String, name: String) -> PairResult {
-        guard var current = open, current.until > Date() else {
+        guard var current = open, current.until > now() else {
             closePairing()
             return .notOpen
         }
@@ -91,18 +110,24 @@ final class Pairing {
             return .wrongCode(closed: false)
         }
         let token = Self.randomToken()
-        let bridge = Bridge(id: UUID().uuidString.lowercased(), name: String(name.prefix(80)), tokenSHA256: Self.sha256(token), pairedAt: Date())
+        let bridge = Bridge(id: UUID().uuidString.lowercased(), name: String(name.prefix(80)), tokenSHA256: Self.sha256(token), pairedAt: now())
+        guard save(bridges + [bridge]) else { return .storageFailure }
         bridges.append(bridge)
-        save()
         closePairing()
         return .paired(token: token, bridge: bridge)
     }
 
-    func remove(_ id: String) {
-        bridges.removeAll { $0.id == id }
-        save()
+    @discardableResult func remove(_ id: String) -> Bool {
+        let remaining = bridges.filter { $0.id != id }
+        guard save(remaining) else { return false }
+        bridges = remaining
+        lastSavedSeen.removeValue(forKey: id)
+        onRemove?(id)
         onChange?()
+        return true
     }
+
+    func contains(_ id: String) -> Bool { bridges.contains { $0.id == id } }
 
     // MARK: Requests
 
@@ -110,10 +135,10 @@ final class Pairing {
     func bridge(token: String) -> Bridge? {
         let hash = Data(Self.sha256(token).utf8)
         guard let index = bridges.firstIndex(where: { Self.equal(Data($0.tokenSHA256.utf8), hash) }) else { return nil }
-        let previous = bridges[index].lastSeenAt
-        bridges[index].lastSeenAt = Date()
-        if previous.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
-            save()
+        let time = now()
+        bridges[index].lastSeenAt = time
+        if lastSavedSeen[bridges[index].id].map({ time.timeIntervalSince($0) >= 60 }) ?? true {
+            _ = save(bridges)
             onChange?()
         }
         return bridges[index]
@@ -121,18 +146,45 @@ final class Pairing {
 
     // MARK: Helpers
 
-    private func save() {
+    private func save(_ value: [Bridge]) -> Bool {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        do { try write(encoder.encode(bridges), to: file) } catch { NSLog("Wingman: cannot save the paired bridges: \(error)") }
+        do {
+            try writeFile(encoder.encode(value), file)
+            lastSavedSeen = Dictionary(uniqueKeysWithValues: value.compactMap { bridge in
+                bridge.lastSeenAt.map { (bridge.id, $0) }
+            })
+            persistenceError = nil
+            return true
+        } catch {
+            persistenceError = "Cannot save paired bridges. No pairing or removal was completed. Check available disk space and folder permissions, then retry."
+            onChange?()
+            return false
+        }
     }
 
-    private func write(_ data: Data, to url: URL) throws {
+    /// Create the temporary file owner-only before writing, then atomically replace the destination.
+    /// All fallible preparation precedes rename, so a failed write never reports a committed change.
+    nonisolated static func write(_ data: Data, to url: URL) throws {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try data.write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        let temporary = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
+        let fd = Darwin.open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { Darwin.close(fd); try? FileManager.default.removeItem(at: temporary) }
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+                offset += count
+            }
+        }
+        guard fsync(fd) == 0, rename(temporary.path, url.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     private static func randomToken() -> String {

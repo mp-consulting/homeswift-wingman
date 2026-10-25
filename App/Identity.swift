@@ -33,7 +33,8 @@ struct Identity {
     static func load() throws -> Identity {
         if let found = try find() { return found }
         let key = P256.Signing.PrivateKey()
-        let der = try selfSigned(key: key, name: "Homeswift Wingman \(ProcessInfo.processInfo.hostName)")
+        // Bridges pin the certificate fingerprint; resolving a hostname here can block launch.
+        let der = try selfSigned(key: key, name: "Homeswift Wingman")
         var error: Unmanaged<CFError>?
         let attributes: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,

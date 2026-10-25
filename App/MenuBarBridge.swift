@@ -8,17 +8,16 @@ final class MenuBarBridge {
     private let store: HomeStore
     private let pairing: Pairing
     private let server: LocalServer?
-    private let panel: PanelModel
+    private let panel: LoginSettings
     private let problem: String?
     private var menu: NSObject?
 
-    init(store: HomeStore, pairing: Pairing, server: LocalServer?, panel: PanelModel, problem: String?) {
+    init(store: HomeStore, pairing: Pairing, server: LocalServer?, panel: LoginSettings, problem: String?) {
         self.store = store
         self.pairing = pairing
         self.server = server
         self.panel = panel
         self.problem = problem
-        panel.perform = { [weak self] action in self?.perform(action) }
         guard let url = Bundle.main.builtInPlugInsURL?.appendingPathComponent("MenuBar.bundle"),
               let bundle = Bundle(url: url), bundle.load(),
               let type = bundle.principalClass as? NSObject.Type
@@ -39,16 +38,6 @@ final class MenuBarBridge {
     func refresh() {
         let model = model()
         menu?.setValue(model, forKey: "model")
-        panel.data = model
-    }
-
-    /// Brings Wingman's window forward, or opens it.
-    func openWindow() {
-        let existing = UIApplication.shared.openSessions.first { $0.scene?.delegate.flatMap { ($0 as? SceneDelegate)?.window } != nil }
-        let activity = NSUserActivity(activityType: SceneDelegate.windowActivity)
-        UIApplication.shared.requestSceneSessionActivation(existing, userActivity: existing == nil ? activity : nil, options: nil) { error in
-            NSLog("Wingman: cannot open the window: \(error)")
-        }
     }
 
     private func perform(_ action: String) {
@@ -56,11 +45,28 @@ final class MenuBarBridge {
         case "read": Task { _ = await store.readAll() }
         case "pair":
             pairing.openPairing()
-            panel.tab = .bridges
-            openWindow()
-        case "open": openWindow()
+            refresh()
+        case "open":
+            menu?.perform(NSSelectorFromString("showPanel"))
         case "cancelPairing": pairing.closePairing()
         case "settings":
+            server?.applySettings()
+            refresh()
+        case let action where action.hasPrefix("setting:"):
+            let parts = action.split(separator: ":")
+            guard parts.count == 3 else { return }
+            let enabled = parts[2] == "1"
+            switch parts[1] {
+            case "advertise", "allowChanges":
+                UserDefaults.standard.set(enabled, forKey: String(parts[1]))
+                server?.applySettings()
+            case "launchAtLogin": panel.setLaunchAtLogin(enabled)
+            default: return
+            }
+            refresh()
+        case let action where action.hasPrefix("port:"):
+            guard let value = UInt16(action.dropFirst(5)), value > 0 else { return }
+            UserDefaults.standard.set(Int(value), forKey: Settings.portKey)
             server?.applySettings()
             refresh()
         case "quit": exit(0)
@@ -73,8 +79,12 @@ final class MenuBarBridge {
     private func model() -> [String: Any] {
         var model: [String: Any] = [
             "summary": store.summary,
+            "advertise": Settings.advertise,
+            "allowChanges": Settings.allowChanges,
+            "launchAtLogin": panel.launchAtLogin,
             "events": store.eventCount,
             "serving": server != nil,
+            "listening": server?.state == "listening",
             "fingerprint": server?.fingerprint ?? "",
             "port": Int(server?.port ?? Settings.port),
             "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
@@ -84,6 +94,8 @@ final class MenuBarBridge {
                 return json
             },
         ]
+        if let error = pairing.persistenceError { model["pairingError"] = error }
+        if let error = panel.launchAtLoginError { model["settingsError"] = error }
         if let at = store.lastEventAt { model["lastEventAt"] = at.timeIntervalSince1970 }
         if let read = store.lastRefresh {
             let failures = (read["failures"] as? [String: Int])?.values.reduce(0, +) ?? 0
@@ -93,18 +105,36 @@ final class MenuBarBridge {
         model["headline"] = headline
         model["level"] = level
         model["homes"] = store.homes.map { home in
-            let rooms = home.rooms + [home.roomForEntireHome()]
+            let rooms = (home.rooms + [home.roomForEntireHome()]).sorted {
+                let order = $0.name.localizedStandardCompare($1.name)
+                return order == .orderedSame
+                    ? $0.uniqueIdentifier.uuidString < $1.uniqueIdentifier.uuidString
+                    : order == .orderedAscending
+            }
             return [
+                "id": home.uniqueIdentifier.uuidString,
                 "name": home.name,
                 "rooms": rooms.compactMap { room -> [String: Any]? in
-                    let accessories = home.accessories.filter { $0.room?.uniqueIdentifier == room.uniqueIdentifier }
+                    let accessories = home.accessories
+                        .filter { $0.room?.uniqueIdentifier == room.uniqueIdentifier }
+                        .sorted {
+                            let typeOrder = $0.category.localizedDescription.localizedStandardCompare($1.category.localizedDescription)
+                            if typeOrder != .orderedSame { return typeOrder == .orderedAscending }
+                            let nameOrder = $0.name.localizedStandardCompare($1.name)
+                            return nameOrder == .orderedSame
+                                ? $0.uniqueIdentifier.uuidString < $1.uniqueIdentifier.uuidString
+                                : nameOrder == .orderedAscending
+                        }
                     guard !accessories.isEmpty else { return nil }
                     return [
+                        "id": room.uniqueIdentifier.uuidString,
                         "name": room.name,
                         "accessories": accessories.map { accessory in
                             [
+                                "id": accessory.uniqueIdentifier.uuidString,
                                 "name": accessory.name,
                                 "detail": accessory.category.localizedDescription,
+                                "symbol": DeviceSymbol.name(for: accessory),
                                 "reachable": accessory.isReachable,
                             ] as [String: Any]
                         },

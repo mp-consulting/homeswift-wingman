@@ -1,0 +1,104 @@
+#!/bin/sh
+# Local Wingman development. Build a source copy outside Documents to avoid Xcode file coordination stalls.
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+CACHE="$HOME/Library/Caches/HomeswiftWingman"
+SOURCE="$CACHE/source"
+APP="$HOME/Applications/Homeswift Wingman.app"
+
+usage() {
+    cat <<'HELP'
+Usage: bin/dev <command>
+
+  run         Build, install and launch the signed app
+  build       Build the signed app without launching
+  unsigned    Compile without signing (no HomeKit or local API)
+  provision   Build, install and launch; allow Xcode provisioning updates
+  open        Launch the installed app without rebuilding
+  stop        Stop Wingman
+  restart     Restart the installed app without rebuilding
+  status      Show process status and query the local API
+  info        Query the local /info endpoint
+  logs        Stream Wingman's logs (Ctrl-C to stop)
+  doctor      Check local build tools and signing identities
+  help        Show this help
+
+CONFIGURATION=Release bin/dev run   Build Release instead of Debug
+PROVISION=1 bin/dev build           Allow provisioning on a build
+WINGMAN_PORT=8620 bin/dev info       Query a non-default server port
+
+Builds use a source copy in ~/Library/Caches/HomeswiftWingman/source.
+Edit the checkout, not that copy. App data and pairings are preserved.
+HELP
+}
+
+stage() {
+    mkdir -p "$SOURCE"
+    for directory in App MenuBar Scripts; do
+        mkdir -p "$SOURCE/$directory"
+        rsync -r --delete "$ROOT/$directory/" "$SOURCE/$directory/"
+    done
+    cp "$ROOT/project.yml" "$SOURCE/project.yml"
+}
+
+build() {
+    stage
+    (cd "$SOURCE" && sh Scripts/build.sh "$@")
+}
+
+stop() {
+    if pgrep -x HomeswiftWingman >/dev/null; then
+        pkill -x HomeswiftWingman
+        attempts=0
+        while pgrep -x HomeswiftWingman >/dev/null; do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge 10 ]; then
+                echo 'Wingman did not stop within 10 seconds.' >&2
+                return 1
+            fi
+            sleep 1
+        done
+    fi
+}
+
+info() {
+    # Wingman uses a self-signed certificate; this unauthenticated local diagnostic sends no secrets.
+    curl --insecure --fail --silent --show-error --connect-timeout 2 --max-time 5 \
+        "https://127.0.0.1:${WINGMAN_PORT:-8619}/info"
+    printf '\n'
+}
+
+[ "$#" -le 1 ] || { usage >&2; exit 2; }
+case "${1:-help}" in
+    help|-h|--help) usage ;;
+    run) build --install ;;
+    build) build ;;
+    unsigned) build --unsigned ;;
+    provision) export PROVISION=1; build --install ;;
+    open) open "$APP" ;;
+    stop) stop ;;
+    restart) stop; open "$APP" ;;
+    info) info ;;
+    status)
+        if pgrep -x HomeswiftWingman >/dev/null; then
+            echo 'Wingman is running.'
+        else
+            echo 'Wingman is not running.'
+            exit 1
+        fi
+        info
+        ;;
+    logs) exec /usr/bin/log stream --style compact --level info --predicate 'process == "HomeswiftWingman"' ;;
+    doctor)
+        missing=0
+        for tool in xcodebuild xcodegen rsync curl; do
+            if ! command -v "$tool"; then missing=1; fi
+        done
+        xcode-select -p || missing=1
+        xcodebuild -version || missing=1
+        security find-identity -v -p codesigning || missing=1
+        echo 'HomeKit requires an Apple Development identity and a matching provisioning profile.'
+        exit "$missing"
+        ;;
+    *) echo "Unknown command: $1" >&2; usage >&2; exit 2 ;;
+esac

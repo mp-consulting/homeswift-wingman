@@ -20,5 +20,10 @@ for attempt in 1 2 3 4 5; do
     [ "$attempt" = 5 ] && exit 1
     sleep 5
 done
+# Match the app's Apple signing identity; the updater verifies the DMG before mounting it.
+IDENTITY=$(codesign -d --verbose=4 "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)
+[ -n "$IDENTITY" ] || { echo "The app must be signed before packaging updates." >&2; exit 1; }
+codesign --force --sign "$IDENTITY" "$DMG"
+codesign --verify --strict "$DMG"
 rm -rf "$STAGE"
 echo "Built $DMG"

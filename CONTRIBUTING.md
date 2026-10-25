@@ -11,8 +11,8 @@ You need a Mac with Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen) 
 Scripts/build.sh --unsigned          # compiles; this is what CI runs, Debug and Release
 ```
 
-An unsigned build has no HomeKit and no keychain, so it reads no home and serves nothing: enough to work on the window
-(`open "…/Homeswift Wingman.app" --args --snapshot DIR` draws it) and the code that does not need HomeKit. To run it
+An unsigned build has no HomeKit and no keychain, so it reads no home and serves nothing: enough to work on the panel
+(`Scripts/test.sh /tmp/wingman-snapshots` draws it with synthetic data) and the code that does not need HomeKit. To run it
 for real you need a signed build:
 
 - **Your own team.** HomeKit is an Apple Developer Program capability that Developer ID cannot carry, so Wingman is
@@ -36,10 +36,10 @@ metadata that codesign refuses.
 - **Security:** never log a pairing code, a token or a key; keep tokens only as their SHA-256; keep lock, garage door
   and alarm targets refused; every route but `/info` and `/pair` needs a token.
 - **The menu bar bundle** (`MenuBar/`) is AppKit only and shares no types with the app: it draws the dictionary
-  `MenuBarBridge` gives it and sends actions back as strings. SwiftUI belongs in the app (`App/`).
+  `MenuBarBridge` gives it and sends actions back as strings. The app (`App/`) owns HomeKit and the server; it does not render a separate window.
 - Changes that users notice get a line in the `[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md), and the README
-  follows the API, the menu and the window.
-- Window changes: look at the tabs in dark and light (`--snapshot`, or the CI artifact) before proposing them.
+  follows the API and menu-bar panel.
+- Panel changes: look at the tabs in dark and light (`Scripts/test.sh /tmp/wingman-snapshots`, or the CI artifact) before proposing them.
 
 The pull request template has the checklist.
 
