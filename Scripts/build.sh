@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds "Homeswift Sidecar.app" (Mac Catalyst) from project.yml with XcodeGen and xcodebuild.
-#   Scripts/build.sh               -> ~/Library/Caches/HomeswiftSidecar/dist/Homeswift Sidecar.app
+# Builds "Homeswift Wingman.app" (Mac Catalyst) from project.yml with XcodeGen and xcodebuild.
+#   Scripts/build.sh               -> ~/Library/Caches/HomeswiftWingman/dist/Homeswift Wingman.app
 #   Scripts/build.sh --install     -> also copies it to ~/Applications and relaunches it
 #   Scripts/build.sh --unsigned    -> compile only, no signing (the app cannot use HomeKit then)
 # Signing is Xcode's automatic signing with an Apple Development certificate: HomeKit is an ADP-only capability
@@ -11,13 +11,13 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-CACHE="$HOME/Library/Caches/HomeswiftSidecar"
-APP="$CACHE/dist/Homeswift Sidecar.app"
+CACHE="$HOME/Library/Caches/HomeswiftWingman"
+APP="$CACHE/dist/Homeswift Wingman.app"
 
 xcodegen generate --quiet
 # XcodeGen writes nested target attributes as a quoted string; Xcode reads SystemCapabilities only as a dictionary.
 sed -i '' 's/SystemCapabilities = ".*";/SystemCapabilities = { com.apple.HomeKit = { enabled = 1; }; };/' \
-    HomeswiftSidecar.xcodeproj/project.pbxproj
+    HomeswiftWingman.xcodeproj/project.pbxproj
 
 SIGNING=""
 case "${1:-}" in
@@ -26,11 +26,11 @@ esac
 PROVISIONING=""
 [ "${PROVISION:-}" = 1 ] && PROVISIONING="-allowProvisioningUpdates -allowProvisioningDeviceRegistration"
 
-xcodebuild -project HomeswiftSidecar.xcodeproj -scheme HomeswiftSidecar -configuration "${CONFIGURATION:-Debug}" \
+xcodebuild -project HomeswiftWingman.xcodeproj -scheme HomeswiftWingman -configuration "${CONFIGURATION:-Debug}" \
     -destination 'platform=macOS,variant=Mac Catalyst' -derivedDataPath "$CACHE/build" $PROVISIONING \
     $SIGNING -quiet build
 
-BUILT="$(find "$CACHE/build/Build/Products" -maxdepth 2 -name 'HomeswiftSidecar.app' -path '*maccatalyst*' | head -n 1)"
+BUILT="$(find "$CACHE/build/Build/Products" -maxdepth 2 -name 'HomeswiftWingman.app' -path '*maccatalyst*' | head -n 1)"
 rm -rf "$APP"
 mkdir -p "$(dirname "$APP")"
 ditto "$BUILT" "$APP"
@@ -39,8 +39,8 @@ echo "Built $APP"
 [ -n "$SIGNING" ] || codesign -d --entitlements :- "$APP" 2>/dev/null | grep -A1 homekit || true
 
 if [ "${1:-}" = "--install" ]; then
-    DEST="$HOME/Applications/Homeswift Sidecar.app"
-    pkill -x HomeswiftSidecar 2>/dev/null && sleep 1 || true
+    DEST="$HOME/Applications/Homeswift Wingman.app"
+    pkill -x HomeswiftWingman 2>/dev/null && sleep 1 || true
     mkdir -p "$HOME/Applications"
     rm -rf "$DEST"
     ditto "$APP" "$DEST"

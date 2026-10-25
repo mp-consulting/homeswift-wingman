@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Homeswift Sidecar</string>
+	<string>Homeswift Wingman</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -24,8 +24,14 @@
 	<string>public.app-category.utilities</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_homeswift-wingman._tcp</string>
+	</array>
 	<key>NSHomeKitUsageDescription</key>
-	<string>Homeswift Sidecar reads your homes, rooms and accessories so your Homeswift bridge and AI assistant can see them.</string>
+	<string>Homeswift Wingman reads your homes, rooms and accessories so your Homeswift bridge and AI assistant can see them.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Homeswift Wingman serves your homes to the Homeswift bridges you pair with it on your network.</string>
 	<key>NSSupportsAutomaticTermination</key>
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
@@ -33,7 +39,7 @@
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
+		<true/>
 		<key>UISceneConfigurations</key>
 		<dict>
 			<key>UIWindowSceneSessionRoleApplication</key>

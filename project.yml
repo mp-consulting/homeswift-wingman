@@ -1,6 +1,6 @@
 # A spike: a Mac Catalyst menu bar app that reads the Home app's homes, rooms and accessories through HomeKit
-# and serves them as JSON on 127.0.0.1. `Scripts/build.sh` generates the project with XcodeGen and builds it.
-name: HomeswiftSidecar
+# and serves them as JSON over TLS to paired Homeswift bridges, advertised over Bonjour. `Scripts/build.sh` generates the project with XcodeGen and builds it.
+name: HomeswiftWingman
 options:
   bundleIdPrefix: com.mpconsulting
   deploymentTarget:
@@ -11,10 +11,10 @@ settings:
     DEVELOPMENT_TEAM: 4HWBUF2R8D
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
 targets:
-  HomeswiftSidecar:
+  HomeswiftWingman:
     type: application
     platform: iOS
     supportedDestinations: [macCatalyst]
@@ -33,13 +33,13 @@ targets:
         com.apple.HomeKit:
           enabled: "1"
     entitlements:
-      path: App/HomeswiftSidecar.entitlements
+      path: App/HomeswiftWingman.entitlements
       properties:
         com.apple.developer.homekit: true
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: Homeswift Sidecar
+        CFBundleDisplayName: Homeswift Wingman
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSUIElement: true
@@ -47,17 +47,19 @@ targets:
         NSSupportsAutomaticTermination: false
         NSSupportsSuddenTermination: false
         LSApplicationCategoryType: public.app-category.utilities
-        NSHomeKitUsageDescription: Homeswift Sidecar reads your homes, rooms and accessories so your Homeswift bridge and AI assistant can see them.
+        NSHomeKitUsageDescription: Homeswift Wingman reads your homes, rooms and accessories so your Homeswift bridge and AI assistant can see them.
+        NSLocalNetworkUsageDescription: Homeswift Wingman serves your homes to the Homeswift bridges you pair with it on your network.
+        NSBonjourServices: [_homeswift-wingman._tcp]
         UILaunchScreen: {}
         UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: false
+          UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations:
             UIWindowSceneSessionRoleApplication:
               - UISceneConfigurationName: Default
                 UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.mpconsulting.HomeswiftSidecar
+        PRODUCT_BUNDLE_IDENTIFIER: com.mpconsulting.HomeswiftWingman
         DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
         SUPPORTS_MACCATALYST: YES
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
@@ -70,9 +72,9 @@ targets:
     info:
       path: MenuBar/Info.plist
       properties:
-        NSPrincipalClass: SidecarStatusMenu
+        NSPrincipalClass: WingmanStatusMenu
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.mpconsulting.HomeswiftSidecar.MenuBar
+        PRODUCT_BUNDLE_IDENTIFIER: com.mpconsulting.HomeswiftWingman.MenuBar
         PRODUCT_NAME: MenuBar
         GENERATE_INFOPLIST_FILE: NO

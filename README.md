@@ -1,22 +1,54 @@
-# Homeswift Sidecar (spike)
+# Homeswift Wingman (spike)
 
 A menu bar app that reads the Home app's homes, rooms, zones, scenes and accessories through Apple's HomeKit
-framework, and serves them as JSON on `127.0.0.1:8619` for a Homeswift plugin to read. HomeKit exists on the Mac
-only for Mac Catalyst apps (the Home app is one), so this is a Catalyst app; its menu bar item lives in an AppKit
-bundle (`MenuBar/`, loaded from `Contents/PlugIns`), because a Catalyst app cannot make an `NSStatusItem` itself.
+framework, and serves them as JSON over TLS to the Homeswift bridges paired with it, on any machine of the network.
+It rides alongside the bridge, hence the name. HomeKit exists on the Mac only for Mac Catalyst apps (the Home app is
+one), so this is a Catalyst app; its menu bar item lives in an AppKit bundle (`MenuBar/`, loaded from
+`Contents/PlugIns`), because a Catalyst app cannot make an `NSStatusItem` itself.
 
 ```sh
-Scripts/build.sh --unsigned          # compile only
+Scripts/build.sh --unsigned          # compile only (an unsigned build has no keychain, so it serves nothing)
 PROVISION=1 Scripts/build.sh         # first signed build: Xcode registers the App ID, this Mac and a development profile
-Scripts/build.sh --install           # ~/Applications/Homeswift Sidecar.app, launched
-curl -s 127.0.0.1:8619/status        # authorization, counts, events received, last read
-curl -s 127.0.0.1:8619/homes         # homes → rooms, zones, scenes, accessories → services → characteristics
-curl -s 127.0.0.1:8619/events        # the latest 200 value changes HomeKit pushed, with the app's state at the time
-curl -s -X POST 127.0.0.1:8619/read  # reads every readable value; failures grouped by error
+Scripts/build.sh --install           # ~/Applications/Homeswift Wingman.app, launched
+dns-sd -B _homeswift-wingman._tcp    # Bonjour: the instance, with v, id and home in its TXT record
+curl -sk https://127.0.0.1:8619/info # id, version, certificate fingerprint, whether pairing is open
+# Menu → Pair a Homeswift Bridge… shows a six-digit code for ten minutes:
+curl -sk https://127.0.0.1:8619/pair -d '{"code": "123456", "name": "My bridge"}'   # → {"token", …}
+H="Authorization: Bearer <token>"
+curl -sk -H "$H" https://127.0.0.1:8619/status        # authorization, counts, events received, last read
+curl -sk -H "$H" https://127.0.0.1:8619/homes         # homes → rooms, zones, scenes, accessories → services → characteristics
+curl -sk -H "$H" https://127.0.0.1:8619/events        # the latest 200 value changes HomeKit pushed
+curl -sk -H "$H" -X POST https://127.0.0.1:8619/read  # reads every readable value; failures grouped by error
 ```
 
-`SIDECAR_PORT` changes the port. Launch it with `open` (or from Finder): started from a shell, macOS checks the
+The menu bar item (a bird) shows the headline, the homes and the pairing code; Open Wingman… (⌘,) opens its window,
+after apple-mail-mcp's menu bar panel: SwiftUI with Liquid Glass on macOS 26, three tabs (Home: rooms and accessories,
+Read All; Bridges: the pairing code, the paired bridges, the certificate; Settings: Bonjour, the port, whether bridges
+may change accessories, open at login). The window is the Catalyst side's: SwiftUI cannot run in the AppKit bundle,
+because a Catalyst process loads the iOS SwiftUI. `open "Homeswift Wingman.app" --args --snapshot DIR` draws each tab
+to PNG, dark and light, then quits.
+
+The settings live in the app's user defaults; `WINGMAN_PORT` wins over the port setting. Launch it with `open` (or from Finder): started from a shell, macOS checks the
 shell's Info.plist for the HomeKit usage text and kills the app.
+
+## Discovery, TLS and pairing
+
+- **Bonjour:** `_homeswift-wingman._tcp` on every interface, named after the Mac. The TXT record has `v` (the API
+  version, `1`), `id` (Wingman's, made once) and `home` (16 hex digits of the SHA-256 of the homes' identifiers), so
+  a bridge that finds Wingman on two Macs of the same home keeps one. Nothing else: anyone on the network reads it.
+- **TLS:** a P-256 key and a self-signed certificate made at the first launch and kept in the data protection
+  keychain (label "Homeswift Wingman TLS"). It names nothing and lasts until 2049: the bridge pins its SHA-256 when it
+  pairs (Homeswift's `HTTPClient` trust `.pinned`), and a new certificate would unpair every bridge. The menu shows the
+  start of the fingerprint under Paired Bridges, to compare with what the bridge shows.
+- **Pairing:** Pair a Homeswift Bridge… shows a six-digit code for ten minutes. `POST /pair` with it returns a token
+  (32 random bytes); the code serves once and five wrong ones close the pairing. Every route but `/info` and `/pair`
+  needs `Authorization: Bearer <token>`. Only each token's SHA-256 is kept, with the bridge's name and when it was
+  last seen, in `~/Library/Application Support/com.mpconsulting.HomeswiftWingman/bridges.json` (owner only). The menu
+  removes a bridge.
+- **What pairing trusts:** the code goes over TLS to a certificate the bridge has not seen yet, so someone who sits
+  between the two on the network during those ten minutes could pair in the bridge's place. After pairing the
+  certificate is pinned. HAP closes that gap with SRP; a later version could too, or the bridge can show the
+  fingerprint to compare with the menu.
 
 ## Signing: no Developer ID, no notarization
 
@@ -66,5 +98,5 @@ cannot ship this app with HomeKit. The ways out:
 
 ## Not in the spike
 
-Writing values, a token on the local API (any process of the user can read it now), a login item, Homeswift's
-side (a plugin that reads `/homes` and `/events`), and Linux, which has no HomeKit.
+A login item, Homeswift's side (a plugin that finds Wingman over Bonjour, pairs, reads `/homes` and `/events`), a
+password-authenticated pairing (SRP), and Linux, which has no HomeKit.

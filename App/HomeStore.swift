@@ -23,7 +23,7 @@ final class HomeStore: NSObject {
     private(set) var eventCount = 0
     /// For a soak test: when the app started, and how many events arrived in each hour since.
     private let startedAt = Date()
-    private var lastEventAt: Date?
+    private(set) var lastEventAt: Date?
     private var eventsPerHour: [String: Int] = [:]
     private(set) var lastRefresh: [String: Any]?
     private var notificationErrors: [String: Int] = [:]
@@ -162,7 +162,7 @@ final class HomeStore: NSObject {
             return ["error": candidates.isEmpty ? "no characteristic \(type)" : "\(type) is not writable"]
         }
         if Self.securityTypes.contains(characteristic.characteristicType) {
-            return ["error": "\(characteristic.localizedDescription) is a security control; not written through the sidecar"]
+            return ["error": "\(characteristic.localizedDescription) is a security control; not written through Wingman"]
         }
         let started = Date()
         let error: Error? = await withCheckedContinuation { continuation in

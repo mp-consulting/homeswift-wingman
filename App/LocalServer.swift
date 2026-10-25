@@ -1,42 +1,110 @@
+import CryptoKit
 import Foundation
 import Network
 
-/// A JSON API on 127.0.0.1, which a Homeswift plugin would poll or stream from:
-/// `GET /status`, `GET /homes`, `GET /events` (the latest value changes), `POST /read` (reads every value),
-/// `POST /write` (`{"accessory": id or name, "characteristic": HAP UUID or description, "value": …}`).
+/// A JSON API over TLS on every interface, advertised over Bonjour as `_homeswift-wingman._tcp`, for a Homeswift
+/// plugin to find, pair with and read:
 ///
-/// Spike only: no token yet, so any process of this user on this Mac can read the home and write to it.
+/// - `GET /info` (open): Wingman's id, version, certificate fingerprint and whether pairing is open.
+/// - `POST /pair` (open): `{"code": "123456", "name": "<the bridge>"}` → `{"token", "bridge", "wingman", "fingerprint"}`.
+/// - With `Authorization: Bearer <token>`: `GET /status`, `GET /homes`, `GET /events` (the latest value changes),
+///   `POST /read` (reads every value), `POST /write` (`{"accessory": id or name, "characteristic": HAP UUID or
+///   description, "value": …}`).
+///
+/// The TXT record carries `v` (the API version), `id` (Wingman's) and `home` (the start of the SHA-256 of the
+/// homes' identifiers), so a bridge that finds two Wingmen for the same home can keep one.
 @MainActor
 final class LocalServer {
-    static let defaultPort: UInt16 = 8619
+    nonisolated static let defaultPort: UInt16 = 8619
+    static let serviceType = "_homeswift-wingman._tcp"
+    static let apiVersion = "1"
 
     private let store: HomeStore
-    private let port: UInt16
+    private let pairing: Pairing
+    private let identity: Identity
+    private(set) var port: UInt16
+    private var advertising = true
     private var listener: NWListener?
+    private var advertisedHome: String?
+    private(set) var state = "starting"
+    var onChange: (() -> Void)?
+    /// The certificate's SHA-256 (lowercase hex), for the menu bar panel.
+    var fingerprint: String { identity.fingerprint }
 
-    init(store: HomeStore, port: UInt16) {
+    init(store: HomeStore, pairing: Pairing, identity: Identity) {
         self.store = store
-        self.port = port
+        self.pairing = pairing
+        self.identity = identity
+        port = Settings.port
+    }
+
+    /// Starts again when the port or Bonjour setting changed.
+    func applySettings() {
+        guard Settings.port != port || Settings.advertise != advertising else { return }
+        listener?.cancel()
+        listener = nil
+        start()
     }
 
     func start() {
-        let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
+        port = Settings.port
+        advertising = Settings.advertise
+        let tls = NWProtocolTLS.Options()
+        sec_protocol_options_set_local_identity(tls.securityProtocolOptions, sec_identity_create(identity.identity)!)
+        sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
+        let parameters = NWParameters(tls: tls)
         parameters.allowLocalEndpointReuse = true
         do {
-            let listener = try NWListener(using: parameters)
+            let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+            if advertising { listener.service = service() }
             listener.newConnectionHandler = { [weak self] connection in
                 MainActor.assumeIsolated { self?.accept(connection) }
             }
-            listener.stateUpdateHandler = { state in
-                if case .failed(let error) = state { NSLog("Sidecar: listener failed: \(error)") }
+            listener.stateUpdateHandler = { [weak self] state in
+                MainActor.assumeIsolated {
+                    switch state {
+                    case .ready: self?.state = "listening"
+                    case .cancelled: return
+                    case .failed(let error):
+                        self?.state = "failed: \(error)"
+                        NSLog("Wingman: listener failed: \(error)")
+                    case .waiting(let error): self?.state = "waiting: \(error)"
+                    default: break
+                    }
+                    self?.onChange?()
+                }
+            }
+            listener.serviceRegistrationUpdateHandler = { change in
+                if case .add(let endpoint) = change { NSLog("Wingman: advertised \(endpoint)") }
             }
             listener.start(queue: .main)
             self.listener = listener
-            NSLog("Sidecar: serving on http://127.0.0.1:\(port)")
+            NSLog("Wingman: serving on https://*:\(port), certificate SHA-256 \(identity.fingerprint)")
         } catch {
-            NSLog("Sidecar: cannot listen on \(port): \(error)")
+            state = "cannot listen on \(port): \(error)"
+            NSLog("Wingman: cannot listen on \(port): \(error)")
         }
+    }
+
+    /// Advertises the homes again when they change (they load after the listener starts).
+    func homesChanged() {
+        guard let listener, advertising, homeHash != advertisedHome else { return }
+        listener.service = service()
+    }
+
+    private var homeHash: String {
+        let ids = store.homes.map(\.uniqueIdentifier.uuidString).sorted().joined(separator: ",")
+        guard !ids.isEmpty else { return "" }
+        return String(SHA256.hash(data: Data(ids.utf8)).map { String(format: "%02x", $0) }.joined().prefix(16))
+    }
+
+    private func service() -> NWListener.Service {
+        advertisedHome = homeHash
+        var txt = NWTXTRecord()
+        txt["v"] = Self.apiVersion
+        txt["id"] = pairing.wingmanID
+        if let advertisedHome, !advertisedHome.isEmpty { txt["home"] = advertisedHome }
+        return NWListener.Service(type: Self.serviceType, txtRecord: txt)
     }
 
     private func accept(_ connection: NWConnection) {
@@ -78,16 +146,42 @@ final class LocalServer {
     }
 
     private func respond(to head: String, body: Data, on connection: NWConnection) {
-        let parts = head.split(separator: "\r\n").first?.split(separator: " ") ?? []
+        let lines = head.split(separator: "\r\n")
+        let parts = lines.first?.split(separator: " ") ?? []
         let method = parts.first.map(String.init) ?? ""
         let path = parts.count > 1 ? String(parts[1].split(separator: "?").first ?? "") : ""
         switch (method, path) {
-        case ("GET", "/status"): send(store.statusJSON(), on: connection)
+        case ("GET", "/info"):
+            send([
+                "service": "homeswift-wingman", "api": Self.apiVersion, "id": pairing.wingmanID,
+                "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
+                "fingerprint": identity.fingerprint, "pairing": pairing.open != nil,
+            ], on: connection)
+            return
+        case ("POST", "/pair"):
+            pair(body, from: connection)
+            return
+        default: break
+        }
+        guard let token = Self.bearer(lines), pairing.bridge(token: token) != nil else {
+            send(["error": "pair first: POST /pair with the code Wingman's menu shows, then send Authorization: Bearer <token>"],
+                 status: "401 Unauthorized", on: connection)
+            return
+        }
+        switch (method, path) {
+        case ("GET", "/status"):
+            var status = store.statusJSON()
+            status["bridges"] = pairing.bridges.count
+            send(status, on: connection)
         case ("GET", "/homes"): send(["homes": store.homesJSON()], on: connection)
         case ("GET", "/events"): send(["events": store.eventsJSON()], on: connection)
         case ("POST", "/read"):
             Task { send(await store.readAll(), on: connection) }
         case ("POST", "/write"):
+            guard Settings.allowChanges else {
+                send(["error": "changes are turned off in Wingman's settings"], status: "403 Forbidden", on: connection)
+                return
+            }
             guard let request = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
                   let accessory = request["accessory"] as? String, let characteristic = request["characteristic"] as? String,
                   let value = request["value"]
@@ -101,6 +195,40 @@ final class LocalServer {
             }
         default: send(["error": "not found"], status: "404 Not Found", on: connection)
         }
+    }
+
+    private func pair(_ body: Data, from connection: NWConnection) {
+        guard let request = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any], let code = request["code"] as? String else {
+            send(["error": #"expected {"code", "name"}"#], status: "400 Bad Request", on: connection)
+            return
+        }
+        let name = (request["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? Self.describe(connection.endpoint)
+        switch pairing.pair(code: code, name: name) {
+        case .paired(let token, let bridge):
+            NSLog("Wingman: paired \(bridge.name) from \(Self.describe(connection.endpoint))")
+            send(["token": token, "bridge": bridge.id, "wingman": pairing.wingmanID, "fingerprint": identity.fingerprint], on: connection)
+        case .notOpen:
+            send(["error": "pairing is not open: choose Pair a Homeswift Bridge in Wingman's menu"], status: "403 Forbidden", on: connection)
+        case .wrongCode(let closed):
+            NSLog("Wingman: wrong pairing code from \(Self.describe(connection.endpoint))\(closed ? ", pairing closed" : "")")
+            send(["error": closed ? "wrong code: pairing closed, open it again from the menu" : "wrong code"], status: "403 Forbidden", on: connection)
+        }
+    }
+
+    private static func bearer(_ lines: [Substring]) -> String? {
+        for line in lines.dropFirst() {
+            let parts = line.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2, parts[0].lowercased() == "authorization" else { continue }
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+            guard value.lowercased().hasPrefix("bearer ") else { return nil }
+            return String(value.dropFirst(7)).trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
+    private static func describe(_ endpoint: NWEndpoint) -> String {
+        if case .hostPort(let host, _) = endpoint { return "\(host)" }
+        return "\(endpoint)"
     }
 
     private func send(_ json: Any, status: String = "200 OK", on connection: NWConnection) {
