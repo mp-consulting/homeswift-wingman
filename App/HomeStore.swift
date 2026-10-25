@@ -142,6 +142,43 @@ final class HomeStore: NSObject {
         return result
     }
 
+    // MARK: Writing a value
+
+    /// Locks, garage doors and alarms: never written through this API (Homeswift sends them through its confirmed path).
+    static let securityTypes: Set<String> = [
+        HMCharacteristicTypeTargetLockMechanismState, HMCharacteristicTypeTargetDoorState,
+        HMCharacteristicTypeTargetSecuritySystemState,
+    ]
+
+    /// Writes `value` to the first writable characteristic of `type` (a HAP UUID or HomeKit's description, such as
+    /// "Power State") on the accessory with id or exact name `accessory`.
+    func write(accessory: String, characteristic type: String, value: Any) async -> [String: Any] {
+        guard let target = homes.flatMap(\.accessories).first(where: { $0.uniqueIdentifier.uuidString == accessory || $0.name == accessory })
+        else { return ["error": "no accessory \(accessory)"] }
+        let candidates = target.services.flatMap(\.characteristics).filter {
+            $0.characteristicType.caseInsensitiveCompare(type) == .orderedSame || $0.localizedDescription == type
+        }
+        guard let characteristic = candidates.first(where: { $0.properties.contains(HMCharacteristicPropertyWritable) }) else {
+            return ["error": candidates.isEmpty ? "no characteristic \(type)" : "\(type) is not writable"]
+        }
+        if Self.securityTypes.contains(characteristic.characteristicType) {
+            return ["error": "\(characteristic.localizedDescription) is a security control; not written through the sidecar"]
+        }
+        let started = Date()
+        let error: Error? = await withCheckedContinuation { continuation in
+            characteristic.writeValue(value) { error in continuation.resume(returning: error) }
+        }
+        var result: [String: Any] = [
+            "accessory": target.name,
+            "characteristic": characteristic.localizedDescription,
+            "seconds": (Date().timeIntervalSince(started) * 100).rounded() / 100,
+            "appState": Self.appState,
+        ]
+        if let error { result["error"] = Self.describe(error) } else { result["written"] = Self.jsonValue(value) }
+        if let current = characteristic.value { result["value"] = Self.jsonValue(current) }
+        return result
+    }
+
     // MARK: JSON
 
     func statusJSON() -> [String: Any] {

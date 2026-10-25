@@ -1,10 +1,11 @@
 import Foundation
 import Network
 
-/// A read-only JSON API on 127.0.0.1, which a Homeswift plugin would poll or stream from:
-/// `GET /status`, `GET /homes`, `GET /events` (the latest value changes), `POST /read` (reads every value).
+/// A JSON API on 127.0.0.1, which a Homeswift plugin would poll or stream from:
+/// `GET /status`, `GET /homes`, `GET /events` (the latest value changes), `POST /read` (reads every value),
+/// `POST /write` (`{"accessory": id or name, "characteristic": HAP UUID or description, "value": …}`).
 ///
-/// Spike only: no token yet, so any process of this user on this Mac can read the home's layout.
+/// Spike only: no token yet, so any process of this user on this Mac can read the home and write to it.
 @MainActor
 final class LocalServer {
     static let defaultPort: UInt16 = 8619
@@ -51,8 +52,13 @@ final class LocalServer {
                 if let data { buffer.append(data) }
                 if let end = buffer.range(of: Data("\r\n\r\n".utf8)) {
                     let head = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)
-                    self.respond(to: head, on: connection)
-                } else if isComplete || error != nil || buffer.count > 65_536 {
+                    let body = buffer[end.upperBound...]
+                    if body.count >= Self.contentLength(head) {
+                        self.respond(to: head, body: Data(body), on: connection)
+                        return
+                    }
+                }
+                if isComplete || error != nil || buffer.count > 65_536 {
                     connection.cancel()
                 } else {
                     self.receive(connection, buffer: buffer)
@@ -61,7 +67,17 @@ final class LocalServer {
         }
     }
 
-    private func respond(to head: String, on connection: NWConnection) {
+    private static func contentLength(_ head: String) -> Int {
+        for line in head.split(separator: "\r\n").dropFirst() {
+            let parts = line.split(separator: ":", maxSplits: 1)
+            if parts.count == 2, parts[0].lowercased() == "content-length" {
+                return Int(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
+            }
+        }
+        return 0
+    }
+
+    private func respond(to head: String, body: Data, on connection: NWConnection) {
         let parts = head.split(separator: "\r\n").first?.split(separator: " ") ?? []
         let method = parts.first.map(String.init) ?? ""
         let path = parts.count > 1 ? String(parts[1].split(separator: "?").first ?? "") : ""
@@ -71,6 +87,18 @@ final class LocalServer {
         case ("GET", "/events"): send(["events": store.eventsJSON()], on: connection)
         case ("POST", "/read"):
             Task { send(await store.readAll(), on: connection) }
+        case ("POST", "/write"):
+            guard let request = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+                  let accessory = request["accessory"] as? String, let characteristic = request["characteristic"] as? String,
+                  let value = request["value"]
+            else {
+                send(["error": #"expected {"accessory", "characteristic", "value"}"#], status: "400 Bad Request", on: connection)
+                return
+            }
+            Task {
+                let result = await store.write(accessory: accessory, characteristic: characteristic, value: value)
+                send(result, status: result["error"] == nil ? "200 OK" : "422 Unprocessable Content", on: connection)
+            }
         default: send(["error": "not found"], status: "404 Not Found", on: connection)
         }
     }
