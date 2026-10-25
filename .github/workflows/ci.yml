@@ -1,0 +1,60 @@
+name: CI
+
+# Builds every push to main and every pull request, unsigned (CI has no development certificate: HomeKit is an
+# ADP-only capability, see the README), then draws the window's tabs with --snapshot and keeps them as an artifact.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Use the newest Xcode on the runner
+        # The image's default can lag behind; local builds use the current Xcode, so CI should too.
+        run: |
+          XCODE="$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -n 1)"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build (Debug)
+        run: Scripts/build.sh --unsigned
+
+      - name: Build (Release)
+        run: CONFIGURATION=Release Scripts/build.sh --unsigned
+
+      - name: Snapshot the window
+        # Unsigned, the app has no HomeKit and no TLS identity: the tabs show that, and the Bridges tab's demo copy
+        # shows the pairing block. A runner without a usable window session skips this rather than failing the build.
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          OUT="$RUNNER_TEMP/snapshots"
+          open -n "$HOME/Library/Caches/HomeswiftWingman/dist/Homeswift Wingman.app" --args --snapshot "$OUT"
+          for _ in $(seq 1 90); do
+            [ -f "$OUT/panel-bridges-demo-light.png" ] && break
+            sleep 1
+          done
+          ls -l "$OUT"
+          test -f "$OUT/panel-bridges-demo-light.png"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: snapshots
+          path: ${{ runner.temp }}/snapshots
+          if-no-files-found: ignore
