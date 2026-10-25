@@ -1,0 +1,321 @@
+import HomeKit
+import UIKit
+
+/// The homes HomeKit gives this app, kept current through HomeKit's delegates.
+///
+/// Every accessory gets this store as its delegate and notifications on the characteristics that send events, so
+/// `events` shows whether HomeKit keeps pushing changes while the app sits in the menu bar.
+@MainActor
+final class HomeStore: NSObject {
+    struct Event {
+        let time: Date
+        let home: String
+        let accessory: String
+        let characteristic: String
+        let value: Any?
+        let appState: String
+    }
+
+    var onChange: (() -> Void)?
+    private var manager: HMHomeManager?
+    private(set) var homesLoaded = false
+    private(set) var events: [Event] = []
+    private(set) var eventCount = 0
+    private(set) var lastRefresh: [String: Any]?
+    private var notificationErrors: [String: Int] = [:]
+    private var lastValueChange: [UUID: Date] = [:]
+
+    var homes: [HMHome] { manager?.homes ?? [] }
+
+    func start() {
+        let manager = HMHomeManager()
+        manager.delegate = self
+        self.manager = manager
+    }
+
+    var authorization: String {
+        guard let status = manager?.authorizationStatus else { return "unknown" }
+        if status.contains(.authorized) { return "authorized" }
+        if status.contains(.restricted) { return "restricted" }
+        if status.contains(.determined) { return "denied" }
+        return "not determined"
+    }
+
+    var accessoryCount: Int { homes.reduce(0) { $0 + $1.accessories.count } }
+
+    var summary: String {
+        guard authorization == "authorized" else { return "HomeKit: \(authorization)" }
+        guard homesLoaded else { return "Loading homes…" }
+        let rooms = homes.reduce(0) { $0 + $1.rooms.count }
+        let unreachable = homes.reduce(0) { $0 + $1.accessories.filter { !$0.isReachable }.count }
+        var text = "\(homes.count) home\(homes.count == 1 ? "" : "s"), \(rooms) rooms, \(accessoryCount) accessories"
+        if unreachable > 0 { text += " (\(unreachable) not responding)" }
+        return text
+    }
+
+    // MARK: Watching
+
+    private func watchAll() {
+        for home in homes {
+            home.delegate = self
+            for accessory in home.accessories { watch(accessory) }
+        }
+    }
+
+    private func watch(_ accessory: HMAccessory) {
+        accessory.delegate = self
+        for service in accessory.services {
+            for characteristic in service.characteristics
+            where characteristic.properties.contains(HMCharacteristicPropertySupportsEventNotification) && !characteristic.isNotificationEnabled {
+                characteristic.enableNotification(true) { [weak self] error in
+                    guard let error else { return }
+                    MainActor.assumeIsolated { self?.notificationErrors[Self.describe(error), default: 0] += 1 }
+                }
+            }
+        }
+    }
+
+    private func record(_ characteristic: HMCharacteristic, of accessory: HMAccessory) {
+        eventCount += 1
+        lastValueChange[characteristic.uniqueIdentifier] = Date()
+        let event = Event(
+            time: Date(), home: home(of: accessory)?.name ?? "", accessory: accessory.name,
+            characteristic: characteristic.localizedDescription, value: characteristic.value, appState: Self.appState
+        )
+        events.append(event)
+        if events.count > 200 { events.removeFirst(events.count - 200) }
+        onChange?()
+    }
+
+    private func home(of accessory: HMAccessory) -> HMHome? {
+        homes.first { $0.accessories.contains(accessory) }
+    }
+
+    // MARK: Reading every value
+
+    /// Reads every readable characteristic, to see what HomeKit answers (and refuses) from a menu bar app.
+    func readAll() async -> [String: Any] {
+        let characteristics = homes.flatMap(\.accessories).flatMap(\.services).flatMap(\.characteristics)
+            .filter { $0.properties.contains(HMCharacteristicPropertyReadable) }
+        let started = Date()
+        let state = Self.appState
+        var failures: [String: Int] = [:]
+        var failedBy: [String: Int] = [:]
+        var succeeded = 0
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            var pending = characteristics.count
+            guard pending > 0 else { continuation.resume(); return }
+            for characteristic in characteristics {
+                characteristic.readValue { error in
+                    MainActor.assumeIsolated {
+                        if let error {
+                            failures[Self.describe(error), default: 0] += 1
+                            let accessory = characteristic.service?.accessory
+                            let key = "\(accessory?.manufacturer ?? "?") · \(accessory?.name ?? "?") · \(characteristic.localizedDescription)"
+                            failedBy[key, default: 0] += 1
+                        } else {
+                            succeeded += 1
+                        }
+                        pending -= 1
+                        if pending == 0 { continuation.resume() }
+                    }
+                }
+            }
+        }
+        let result: [String: Any] = [
+            "characteristics": characteristics.count,
+            "succeeded": succeeded,
+            "failures": failures,
+            "failed": failedBy,
+            "seconds": (Date().timeIntervalSince(started) * 100).rounded() / 100,
+            "appState": state,
+            "finishedAt": ISO8601DateFormatter().string(from: Date()),
+        ]
+        lastRefresh = result
+        onChange?()
+        return result
+    }
+
+    // MARK: JSON
+
+    func statusJSON() -> [String: Any] {
+        var status: [String: Any] = [
+            "authorization": authorization,
+            "homesLoaded": homesLoaded,
+            "homes": homes.count,
+            "accessories": accessoryCount,
+            "events": eventCount,
+            "appState": Self.appState,
+            "notificationErrors": notificationErrors,
+        ]
+        if let lastRefresh { status["lastRead"] = lastRefresh }
+        return status
+    }
+
+    func homesJSON() -> [[String: Any]] {
+        homes.map { home in
+            let roomNames = Dictionary(uniqueKeysWithValues: (home.rooms + [home.roomForEntireHome()]).map { ($0.uniqueIdentifier, $0.name) })
+            return [
+                "id": home.uniqueIdentifier.uuidString,
+                "name": home.name,
+                "primary": home.isPrimary,
+                "rooms": home.rooms.map { room in
+                    ["id": room.uniqueIdentifier.uuidString, "name": room.name, "accessories": room.accessories.count] as [String: Any]
+                },
+                "zones": home.zones.map { zone in
+                    ["name": zone.name, "rooms": zone.rooms.map(\.name)] as [String: Any]
+                },
+                "scenes": home.actionSets.map { set in
+                    ["name": set.name, "type": set.actionSetType, "actions": set.actions.count] as [String: Any]
+                },
+                "accessories": home.accessories.map { accessory in
+                    accessoryJSON(accessory, room: accessory.room.flatMap { roomNames[$0.uniqueIdentifier] })
+                },
+            ]
+        }
+    }
+
+    private func accessoryJSON(_ accessory: HMAccessory, room: String?) -> [String: Any] {
+        var json: [String: Any] = [
+            "id": accessory.uniqueIdentifier.uuidString,
+            "name": accessory.name,
+            "category": accessory.category.localizedDescription,
+            "reachable": accessory.isReachable,
+            "bridged": accessory.isBridged,
+            "blocked": accessory.isBlocked,
+        ]
+        if let room { json["room"] = room }
+        if let manufacturer = accessory.manufacturer { json["manufacturer"] = manufacturer }
+        if let model = accessory.model { json["model"] = model }
+        if let firmware = accessory.firmwareVersion { json["firmware"] = firmware }
+        json["services"] = accessory.services.map { service in
+            [
+                "name": service.name,
+                "type": service.serviceType,
+                "description": service.localizedDescription,
+                "primary": service.isPrimaryService,
+                "characteristics": service.characteristics.map(characteristicJSON),
+            ] as [String: Any]
+        }
+        return json
+    }
+
+    private func characteristicJSON(_ characteristic: HMCharacteristic) -> [String: Any] {
+        var json: [String: Any] = [
+            "type": characteristic.characteristicType,
+            "description": characteristic.localizedDescription,
+            "properties": characteristic.properties.map(Self.shortProperty),
+            "notifying": characteristic.isNotificationEnabled,
+        ]
+        if let value = characteristic.value { json["value"] = Self.jsonValue(value) }
+        if let metadata = characteristic.metadata {
+            if let format = metadata.format { json["format"] = format }
+            if let units = metadata.units { json["units"] = units }
+            if let minimum = metadata.minimumValue { json["min"] = minimum }
+            if let maximum = metadata.maximumValue { json["max"] = maximum }
+            if let step = metadata.stepValue { json["step"] = step }
+        }
+        if let changed = lastValueChange[characteristic.uniqueIdentifier] {
+            json["changedAt"] = ISO8601DateFormatter().string(from: changed)
+        }
+        return json
+    }
+
+    func eventsJSON() -> [[String: Any]] {
+        let formatter = ISO8601DateFormatter()
+        return events.reversed().map { event in
+            var json: [String: Any] = [
+                "time": formatter.string(from: event.time),
+                "home": event.home,
+                "accessory": event.accessory,
+                "characteristic": event.characteristic,
+                "appState": event.appState,
+            ]
+            if let value = event.value { json["value"] = Self.jsonValue(value) }
+            return json
+        }
+    }
+
+    // MARK: Helpers
+
+    static var appState: String {
+        switch UIApplication.shared.applicationState {
+        case .active: "active"
+        case .inactive: "inactive"
+        case .background: "background"
+        @unknown default: "unknown"
+        }
+    }
+
+    static func describe(_ error: Error) -> String {
+        let error = error as NSError
+        return "\(error.domain) \(error.code): \(error.localizedDescription)"
+    }
+
+    private static func shortProperty(_ property: String) -> String {
+        switch property {
+        case HMCharacteristicPropertyReadable: "read"
+        case HMCharacteristicPropertyWritable: "write"
+        case HMCharacteristicPropertySupportsEventNotification: "events"
+        case HMCharacteristicPropertyHidden: "hidden"
+        default: property
+        }
+    }
+
+    private static func jsonValue(_ value: Any) -> Any {
+        switch value {
+        case let data as Data: data.base64EncodedString()
+        case let array as [Any]: array.map(jsonValue)
+        case let dictionary as [String: Any]: dictionary.mapValues(jsonValue)
+        case is NSNumber, is String: value
+        default: String(describing: value)
+        }
+    }
+}
+
+extension HomeStore: @preconcurrency HMHomeManagerDelegate {
+    func homeManagerDidUpdateHomes(_ manager: HMHomeManager) {
+        homesLoaded = true
+        watchAll()
+        onChange?()
+    }
+
+    func homeManager(_ manager: HMHomeManager, didUpdate status: HMHomeManagerAuthorizationStatus) {
+        onChange?()
+    }
+
+    func homeManager(_ manager: HMHomeManager, didAdd home: HMHome) {
+        watchAll()
+        onChange?()
+    }
+
+    func homeManager(_ manager: HMHomeManager, didRemove home: HMHome) {
+        onChange?()
+    }
+}
+
+extension HomeStore: @preconcurrency HMHomeDelegate {
+    func home(_ home: HMHome, didAdd accessory: HMAccessory) {
+        watch(accessory)
+        onChange?()
+    }
+
+    func home(_ home: HMHome, didRemove accessory: HMAccessory) { onChange?() }
+    func home(_ home: HMHome, didUpdate room: HMRoom, for accessory: HMAccessory) { onChange?() }
+    func home(_ home: HMHome, didAdd room: HMRoom) { onChange?() }
+    func home(_ home: HMHome, didRemove room: HMRoom) { onChange?() }
+    func home(_ home: HMHome, didUpdateNameFor room: HMRoom) { onChange?() }
+}
+
+extension HomeStore: @preconcurrency HMAccessoryDelegate {
+    func accessory(_ accessory: HMAccessory, service: HMService, didUpdateValueFor characteristic: HMCharacteristic) {
+        record(characteristic, of: accessory)
+    }
+
+    func accessoryDidUpdateReachability(_ accessory: HMAccessory) { onChange?() }
+    func accessoryDidUpdateName(_ accessory: HMAccessory) { onChange?() }
+    func accessoryDidUpdateServices(_ accessory: HMAccessory) {
+        watch(accessory)
+        onChange?()
+    }
+}

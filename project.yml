@@ -1,0 +1,78 @@
+# A spike: a Mac Catalyst menu bar app that reads the Home app's homes, rooms and accessories through HomeKit
+# and serves them as JSON on 127.0.0.1. `Scripts/build.sh` generates the project with XcodeGen and builds it.
+name: HomeswiftSidecar
+options:
+  bundleIdPrefix: com.mpconsulting
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "14.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: 4HWBUF2R8D
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  HomeswiftSidecar:
+    type: application
+    platform: iOS
+    supportedDestinations: [macCatalyst]
+    sources: [App]
+    dependencies:
+      # AppKit lives in its own bundle: a Catalyst app cannot make an NSStatusItem itself.
+      - target: MenuBar
+        embed: true
+        codeSign: true
+        platformFilter: macOS
+        copy:
+          destination: plugins
+    # Automatic signing turns the capability on for the App ID only when the project lists it here.
+    attributes:
+      SystemCapabilities:
+        com.apple.HomeKit:
+          enabled: "1"
+    entitlements:
+      path: App/HomeswiftSidecar.entitlements
+      properties:
+        com.apple.developer.homekit: true
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Homeswift Sidecar
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSUIElement: true
+        # No window ever shows, so macOS would otherwise end the app as idle.
+        NSSupportsAutomaticTermination: false
+        NSSupportsSuddenTermination: false
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHomeKitUsageDescription: Homeswift Sidecar reads your homes, rooms and accessories so your Homeswift bridge and AI assistant can see them.
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mpconsulting.HomeswiftSidecar
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+        SUPPORTS_MACCATALYST: YES
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        TARGETED_DEVICE_FAMILY: "2,6"
+        GENERATE_INFOPLIST_FILE: NO
+  MenuBar:
+    type: bundle
+    platform: macOS
+    sources: [MenuBar]
+    info:
+      path: MenuBar/Info.plist
+      properties:
+        NSPrincipalClass: SidecarStatusMenu
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mpconsulting.HomeswiftSidecar.MenuBar
+        PRODUCT_NAME: MenuBar
+        GENERATE_INFOPLIST_FILE: NO
