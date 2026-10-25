@@ -46,6 +46,11 @@ cannot ship this app with HomeKit. The ways out:
   test: every accessory has one, HAP ones too.
 - **Events:** value changes arrive, from Matter accessories too (Hue lights and sensors): notifications work
   where reads fail. The app reports `active` the whole time, as a menu bar app: no background state so far.
+- **Writing** (`POST /write`): a Matter ceiling light took hue 0 and saturation 100 in about 0.07 s, although every
+  read of it fails. Two Matter lamps switched off at the wall refused with the same `HMErrorDomain 74` in 30–40 ms,
+  while HomeKit still listed them as reachable: for Matter devices `reachable` lags, and error 74 on a write means
+  the device did not answer. No event came back from the light after the write; HomeKit's value is the one written.
+  Lock, garage door and alarm targets are refused before HomeKit is asked.
 - **Soak test:** `/status` has `startedAt`, `lastEventAt` and `eventsPerHour` (UTC hours); a gap across a night of
   screen lock and sleep would show HomeKit stopped sending.
 
