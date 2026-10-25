@@ -50,6 +50,17 @@ shell's Info.plist for the HomeKit usage text and kills the app.
   certificate is pinned. HAP closes that gap with SRP; a later version could too, or the bridge can show the
   fingerprint to compare with the menu.
 
+## Install
+
+```sh
+brew install --cask mp-consulting/tap/homeswift-wingman
+```
+
+Releases are made on a Mac with the team's development certificate: `Scripts/release.sh` builds the version in
+`project.yml` signed, packs `HomeswiftWingman-<version>.dmg`, tags it and creates the GitHub release; the tap's
+cask follows within 6 hours. The image runs only on the Macs registered in the team's account (below), and macOS
+asks once before opening it (System Settings › Privacy & Security › Open Anyway).
+
 ## Signing: no Developer ID, no notarization
 
 Apple's "Supported capabilities (macOS)" table lists HomeKit for the Apple Developer Program (development and
