@@ -21,6 +21,10 @@ final class HomeStore: NSObject {
     private(set) var homesLoaded = false
     private(set) var events: [Event] = []
     private(set) var eventCount = 0
+    /// For a soak test: when the app started, and how many events arrived in each hour since.
+    private let startedAt = Date()
+    private var lastEventAt: Date?
+    private var eventsPerHour: [String: Int] = [:]
     private(set) var lastRefresh: [String: Any]?
     private var notificationErrors: [String: Int] = [:]
     private var lastValueChange: [UUID: Date] = [:]
@@ -78,6 +82,8 @@ final class HomeStore: NSObject {
     private func record(_ characteristic: HMCharacteristic, of accessory: HMAccessory) {
         eventCount += 1
         lastValueChange[characteristic.uniqueIdentifier] = Date()
+        lastEventAt = Date()
+        eventsPerHour[String(ISO8601DateFormatter().string(from: Date()).prefix(13)), default: 0] += 1
         let event = Event(
             time: Date(), home: home(of: accessory)?.name ?? "", accessory: accessory.name,
             characteristic: characteristic.localizedDescription, value: characteristic.value, appState: Self.appState
@@ -147,8 +153,11 @@ final class HomeStore: NSObject {
             "events": eventCount,
             "appState": Self.appState,
             "notificationErrors": notificationErrors,
+            "startedAt": ISO8601DateFormatter().string(from: startedAt),
+            "eventsPerHour": eventsPerHour,
         ]
         if let lastRefresh { status["lastRead"] = lastRefresh }
+        if let lastEventAt { status["lastEventAt"] = ISO8601DateFormatter().string(from: lastEventAt) }
         return status
     }
 
@@ -188,6 +197,10 @@ final class HomeStore: NSObject {
         if let manufacturer = accessory.manufacturer { json["manufacturer"] = manufacturer }
         if let model = accessory.model { json["model"] = model }
         if let firmware = accessory.firmwareVersion { json["firmware"] = firmware }
+        // Set for every accessory in the home, HAP ones too: Apple's fabric numbers them all.
+        if let node = accessory.matterNodeID { json["matterNodeID"] = node }
+        // Set only for a service of a Matter device (HMService.h).
+        if accessory.services.contains(where: { $0.matterEndpointID != nil }) { json["matter"] = true }
         json["services"] = accessory.services.map { service in
             [
                 "name": service.name,

@@ -39,12 +39,15 @@ cannot ship this app with HomeKit. The ways out:
   characteristics, all with their room. Bridged accessories report the category "Other"; their services say what
   they are. Homeswift's own accessories are there (manufacturer per plugin, bridged), so a plugin must skip them.
 - **Reading every value** (`POST /read`): 1,383 readable characteristics in under a second; 1,107 read, 276 failed
-  with `HMErrorDomain 74` ("Read/Write operation failed"). All the failures are on 66 accessories: the Hue bridge
-  and its lights and sensors, IKEA DIRIGERA and its devices, the Nuki lock, and 41 bridged accessories reporting
-  manufacturer "Unknown"; probably those that reach the home over Matter (not checked). Every accessory behind
-  Homeswift read fine. Half of the failing characteristics still have a cached value.
-- **Events:** value changes arrive, from the failing accessories too (Hue lights and sensors): notifications work
+  with `HMErrorDomain 74` ("Read/Write operation failed"). The failures are exactly the 66 **Matter** accessories
+  (`"matter": true`: a service with a `matterEndpointID`): the Hue bridge and its lights and sensors, IKEA DIRIGERA
+  and its devices, the Nuki lock, and 41 bridged ones reporting manufacturer "Unknown". All 54 HAP accessories read
+  fine, Homeswift's included. Half of the Matter characteristics still have a cached value. `matterNodeID` is no
+  test: every accessory has one, HAP ones too.
+- **Events:** value changes arrive, from Matter accessories too (Hue lights and sensors): notifications work
   where reads fail. The app reports `active` the whole time, as a menu bar app: no background state so far.
+- **Soak test:** `/status` has `startedAt`, `lastEventAt` and `eventsPerHour` (UTC hours); a gap across a night of
+  screen lock and sleep would show HomeKit stopped sending.
 
 ## What the spike has to answer
 
