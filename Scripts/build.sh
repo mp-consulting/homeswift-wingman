@@ -26,8 +26,12 @@ esac
 PROVISIONING=""
 [ "${PROVISION:-}" = 1 ] && PROVISIONING="-allowProvisioningUpdates -allowProvisioningDeviceRegistration"
 
+DESTINATION='platform=macOS,variant=Mac Catalyst'
+if [ "${CONFIGURATION:-Debug}" = AppStore ]; then
+    DESTINATION='generic/platform=macOS,variant=Mac Catalyst'
+fi
 xcodebuild -project HomeswiftWingman.xcodeproj -scheme HomeswiftWingman -configuration "${CONFIGURATION:-Debug}" \
-    -destination 'platform=macOS,variant=Mac Catalyst' -derivedDataPath "$CACHE/build" $PROVISIONING \
+    -destination "$DESTINATION" -derivedDataPath "$CACHE/build" $PROVISIONING \
     $SIGNING -quiet build
 
 BUILT="$CACHE/build/Build/Products/${CONFIGURATION:-Debug}-maccatalyst/HomeswiftWingman.app"

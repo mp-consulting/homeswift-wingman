@@ -1,3 +1,4 @@
+#if !APP_STORE
 import AppKit
 import Security
 
@@ -286,3 +287,5 @@ extension SecCSFlags {
     static let strictValidate = SecCSFlags(rawValue: kSecCSStrictValidate)
     static let checkNestedCode = SecCSFlags(rawValue: kSecCSCheckNestedCode)
 }
+
+#endif

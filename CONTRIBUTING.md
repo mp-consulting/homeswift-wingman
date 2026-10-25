@@ -5,7 +5,7 @@ approach before you spend time on it.
 
 ## Building
 
-You need a Mac with Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
+You need an Apple Silicon Mac running macOS 27.0.1 or later, Xcode 27 or later, and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
 
 ```bash
 Scripts/build.sh --unsigned          # compiles; this is what CI runs, Debug and Release

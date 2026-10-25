@@ -8,7 +8,9 @@ import Darwin
 public final class WingmanStatusMenu: NSObject {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let panel = WingmanPopoverController()
+    #if !APP_STORE
     private let updater = Updater()
+    #endif
     private var window: MenuPanel?
     private var outsideClick: Any?
     private var localClick: Any?
@@ -22,6 +24,7 @@ public final class WingmanStatusMenu: NSObject {
         item.button?.image = WingmanIcon.image()
         item.button?.target = self
         item.button?.action = #selector(toggle)
+        #if !APP_STORE
         updater.automaticChecks = { UserDefaults.standard.object(forKey: "automaticUpdateChecks") as? Bool ?? true }
         updater.onChange = { [weak self] in self?.refreshPanel() }
         panel.perform = { [weak self] action in
@@ -38,13 +41,17 @@ public final class WingmanStatusMenu: NSObject {
             default: self.actionHandler?(action)
             }
         }
-        refreshPanel()
         updater.start()
+        #else
+        panel.perform = { [weak self] action in self?.actionHandler?(action) }
+        #endif
+        refreshPanel()
     }
 
 
     private func refreshPanel() {
         var value = model
+        #if !APP_STORE
         value["automaticUpdateChecks"] = updater.automaticChecks()
         value["updateEnabled"] = updater.isEnabled
         value["updateBlocker"] = updater.installBlocker
@@ -61,6 +68,9 @@ public final class WingmanStatusMenu: NSObject {
             value["updateBusy"] = true
         case .failed(let message): value["updateStatus"] = message
         }
+        #else
+        value["appStoreDistribution"] = true
+        #endif
         panel.model = value
     }
 
@@ -522,7 +532,12 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         _ = checkPort()
         add(label("Without Bonjour, bridges need this Mac’s address. Disabling changes makes paired bridges read-only. Locks, garage doors and alarms are never changed through Wingman.", small: true))
         if let error = model["settingsError"] as? String { add(label(error, small: true)) }
+        section("Privacy")
+        add(label("Wingman shares your Home data only with bridges you explicitly pair. A bridge may forward data to services you configure, including AI providers. Remove a bridge to revoke its access; disable changes for read-only access. Wingman does not send analytics to its developer.", small: true))
         section("Updates")
+        #if APP_STORE
+        add(label("Updates are delivered by the App Store or TestFlight.", small: true))
+        #else
         let automatic = NSSwitch()
         automatic.controlSize = .small
         automatic.state = model["automaticUpdateChecks"] as? Bool == false ? .off : .on
@@ -551,6 +566,7 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
             check.isEnabled = enabled && !busy
             add(check)
         }
+        #endif
     }
 
     func controlTextDidChange(_ notification: Notification) {

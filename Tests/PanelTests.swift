@@ -62,6 +62,12 @@ import AppKit
         update["updateAvailable"] = true
         update["updateStatus"] = "Version 0.3.0 is available."
         panel.model = update
+        #if APP_STORE
+        try expect(text("Updates are delivered by the App Store or TestFlight."), "Apple-managed updates are explained")
+        try expect(!PanelFixtures.descendants(panel.view).contains {
+            ["installUpdate", "checkUpdate", "automaticUpdateChecks"].contains($0.identifier?.rawValue ?? "")
+        }, "App Store build has no external updater controls even with an available update")
+        #else
         try expect(text("Version 0.3.0 is available."), "available update is visible")
         try PanelFixtures.click("installUpdate", in: panel)
         try expect(actions.last == "installUpdate", "install requires an explicit click")
@@ -76,6 +82,7 @@ import AppKit
         panel.model = update
         let check = PanelFixtures.descendants(panel.view).compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "checkUpdate" }
         try expect(check?.isEnabled == false && text("Downloading…"), "download disables duplicate checks")
+        #endif
         let directory = URL(fileURLWithPath: CommandLine.arguments[1])
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for (style, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {

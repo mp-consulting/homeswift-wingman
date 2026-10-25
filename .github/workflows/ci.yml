@@ -37,6 +37,9 @@ jobs:
       - name: Build (Release)
         run: CONFIGURATION=Release Scripts/build.sh --unsigned
 
+      - name: Build (App Store, Apple Silicon)
+        run: CONFIGURATION=AppStore Scripts/build.sh --unsigned
+
       - name: Regression tests and actual menu-bar snapshots
         timeout-minutes: 3
         run: Scripts/test.sh "$RUNNER_TEMP/snapshots"

@@ -4,13 +4,23 @@ name: HomeswiftWingman
 options:
   bundleIdPrefix: com.mpconsulting
   deploymentTarget:
-    iOS: "18.0"
-    macOS: "14.0"
+    iOS: "27.0.1"
+    macOS: "27.0.1"
+configs:
+  Debug: debug
+  Release: release
+  AppStore: release
 settings:
+  configs:
+    AppStore:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) APP_STORE"
+      ONLY_ACTIVE_ARCH: NO
+      ARCHS: arm64
   base:
     DEVELOPMENT_TEAM: 4HWBUF2R8D
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
+    ARCHS: arm64
     MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
 targets:
@@ -32,13 +42,10 @@ targets:
       SystemCapabilities:
         com.apple.HomeKit:
           enabled: "1"
-    entitlements:
-      path: App/HomeswiftWingman.entitlements
-      properties:
-        com.apple.developer.homekit: true
     info:
       path: App/Info.plist
       properties:
+        LSMinimumSystemVersion: "27.0.1"
         CFBundleDisplayName: Homeswift Wingman
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
@@ -58,7 +65,13 @@ targets:
               - UISceneConfigurationName: Default
                 UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
     settings:
+      configs:
+        AppStore:
+          CODE_SIGN_ENTITLEMENTS: App/AppStore.entitlements
+          ENABLE_APP_SANDBOX: YES
+          ENABLE_HARDENED_RUNTIME: YES
       base:
+        CODE_SIGN_ENTITLEMENTS: App/HomeswiftWingman.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.mpconsulting.HomeswiftWingman
         DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
         SUPPORTS_MACCATALYST: YES

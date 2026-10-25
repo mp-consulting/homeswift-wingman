@@ -1,3 +1,4 @@
+#if !APP_STORE
 // Adapted from apple-mail-mcp (MIT, copyright 2026 Mickael Palma).
 import Foundation
 
@@ -88,3 +89,5 @@ public enum UpdateSchedule {
         return now.timeIntervalSince(lastCheck) >= interval || lastCheck > now
     }
 }
+
+#endif

@@ -11,6 +11,8 @@ HomeKit exists on the Mac only for Mac Catalyst apps (the Home app is one), so W
 
 ## Install
 
+Requires macOS 27.0.1 or later on Apple Silicon.
+
 ```sh
 brew install --cask mp-consulting/tap/homeswift-wingman
 ```
@@ -213,3 +215,10 @@ Accessory JSON includes HomeKit’s `supportsIdentify` flag. A paired bridge can
 `POST /write` with `{"accessory":"<id>","characteristic":"Identify","value":true}`
 to invoke HomeKit’s native identification action. It requires “Let bridges change accessories”,
 checks device support and returns HomeKit failures. Room assignments are unchanged.
+
+## Mac App Store preparation
+
+The `AppStore` build configuration enables sandboxed networking, requires macOS 27.0.1+ on Apple Silicon,
+and removes the GitHub updater in favor of Apple-managed updates. See
+[App Store and TestFlight preparation](docs/app-store.md) for archive/export commands, signing,
+privacy and review requirements. This configuration is not yet an approved App Store release.

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+- Prepare a sandboxed macOS 27.0.1+ App Store configuration with Apple-managed updates, privacy manifest, archive/export tooling, and regression coverage.
+
 ## [0.2.0] - 2026-10-25
 
 - Report HomeKit identification support and forward Identify writes to its native identification action.
