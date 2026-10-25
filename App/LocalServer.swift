@@ -7,8 +7,9 @@ import Network
 ///
 /// - `GET /info` (open): Wingman's id, version, certificate fingerprint and whether pairing is open.
 /// - `POST /pair` (open): `{"code": "123456", "name": "<the bridge>"}` → `{"token", "bridge", "wingman", "fingerprint"}`.
-/// - With `Authorization: Bearer <token>`: `GET /status`, `GET /homes`, `GET /events` (the latest value changes),
-///   `POST /read` (reads every value), `POST /write` (`{"accessory": id or name, "characteristic": HAP UUID or
+/// - With `Authorization: Bearer <token>`: `GET /status`, `GET /homes`, `GET /events` (the latest value changes;
+///   `?since=<seq>&wait=<seconds>` waits up to 30 s for those after `seq`, oldest first, with `last`),
+///   `POST /read` (reads every value), `POST /write` (`{"accessory": id or name, "characteristic": its id, HAP UUID or
 ///   description, "value": …}`).
 ///
 /// The TXT record carries `v` (the API version), `id` (Wingman's) and `home` (the start of the SHA-256 of the
@@ -26,6 +27,8 @@ final class LocalServer {
     private var advertising = true
     private var listener: NWListener?
     private var advertisedHome: String?
+    /// `GET /events?since=&wait=` requests held until a value changes or their wait ends.
+    private var waiting: [(id: UUID, since: Int, connection: NWConnection)] = []
     private(set) var state = "starting"
     var onChange: (() -> Void)?
     /// The certificate's SHA-256 (lowercase hex), for the menu bar panel.
@@ -149,7 +152,9 @@ final class LocalServer {
         let lines = head.split(separator: "\r\n")
         let parts = lines.first?.split(separator: " ") ?? []
         let method = parts.first.map(String.init) ?? ""
-        let path = parts.count > 1 ? String(parts[1].split(separator: "?").first ?? "") : ""
+        let target = parts.count > 1 ? parts[1].split(separator: "?", maxSplits: 1) : []
+        let path = target.first.map(String.init) ?? ""
+        let query = Self.query(target.count > 1 ? String(target[1]) : "")
         switch (method, path) {
         case ("GET", "/info"):
             send([
@@ -174,7 +179,23 @@ final class LocalServer {
             status["bridges"] = pairing.bridges.count
             send(status, on: connection)
         case ("GET", "/homes"): send(["homes": store.homesJSON()], on: connection)
-        case ("GET", "/events"): send(["events": store.eventsJSON()], on: connection)
+        case ("GET", "/events"):
+            guard let since = query["since"].flatMap(Int.init) else {
+                send(["events": store.eventsJSON(), "last": store.lastSeq], on: connection)
+                return
+            }
+            // Long-poll: answered now when there is something newer, else at the next change or after `wait` seconds.
+            let wait = min(max(query["wait"].flatMap(Double.init) ?? 0, 0), 30)
+            if store.lastSeq > since || wait == 0 {
+                send(["events": store.eventsJSON(since: since), "last": store.lastSeq], on: connection)
+            } else {
+                let id = UUID()
+                waiting.append((id, since, connection))
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(wait))
+                    self?.answerWaiting(id)
+                }
+            }
         case ("POST", "/read"):
             Task { send(await store.readAll(), on: connection) }
         case ("POST", "/write"):
@@ -195,6 +216,27 @@ final class LocalServer {
             }
         default: send(["error": "not found"], status: "404 Not Found", on: connection)
         }
+    }
+
+    /// A value changed: every waiting `GET /events` gets the events after its `since`.
+    func eventsArrived() {
+        for entry in waiting { answerWaiting(entry.id) }
+    }
+
+    private func answerWaiting(_ id: UUID) {
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
+        let entry = waiting.remove(at: index)
+        send(["events": store.eventsJSON(since: entry.since), "last": store.lastSeq], on: entry.connection)
+    }
+
+    private static func query(_ text: String) -> [String: String] {
+        var query: [String: String] = [:]
+        for pair in text.split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1)
+            guard let key = parts.first?.removingPercentEncoding else { continue }
+            query[key] = parts.count > 1 ? String(parts[1]).removingPercentEncoding : ""
+        }
+        return query
     }
 
     private func pair(_ body: Data, from connection: NWConnection) {

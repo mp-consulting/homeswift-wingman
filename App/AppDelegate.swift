@@ -28,6 +28,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             self?.menuBar?.refresh()
         }
         pairing.onChange = { [weak self] in self?.menuBar?.refresh() }
+        store.onEvent = { [weak self] in self?.server?.eventsArrived() }
         server?.onChange = { [weak self] in self?.menuBar?.refresh() }
         store.start()
         let arguments = ProcessInfo.processInfo.arguments

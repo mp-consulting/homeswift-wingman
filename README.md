@@ -17,7 +17,8 @@ curl -sk https://127.0.0.1:8619/pair -d '{"code": "123456", "name": "My bridge"}
 H="Authorization: Bearer <token>"
 curl -sk -H "$H" https://127.0.0.1:8619/status        # authorization, counts, events received, last read
 curl -sk -H "$H" https://127.0.0.1:8619/homes         # homes → rooms, zones, scenes, accessories → services → characteristics
-curl -sk -H "$H" https://127.0.0.1:8619/events        # the latest 200 value changes HomeKit pushed
+curl -sk -H "$H" https://127.0.0.1:8619/events        # the latest value changes HomeKit pushed, newest first
+curl -sk -H "$H" "https://127.0.0.1:8619/events?since=42&wait=25"   # those after seq 42, waiting up to 25 s for one
 curl -sk -H "$H" -X POST https://127.0.0.1:8619/read  # reads every readable value; failures grouped by error
 ```
 
@@ -60,6 +61,14 @@ Releases are made on a Mac with the team's development certificate: `Scripts/rel
 `project.yml` signed, packs `HomeswiftWingman-<version>.dmg`, tags it and creates the GitHub release; the tap's
 cask follows within 6 hours. The image runs only on the Macs registered in the team's account (below), and macOS
 asks once before opening it (System Settings › Privacy & Security › Open Anyway).
+
+## The API for Homeswift
+
+Homeswift's Wingman plugin (`Plugins/Wingman` in the homeswift repository) uses it this way: `/homes` gives every
+service and characteristic an `id` (HomeKit's `uniqueIdentifier`), HomeKit's ranges (`min`, `max`, `step`,
+`validValues`) and, for a bridged accessory, its `bridge` (so a Homeswift bridge leaves out its own accessories);
+`/events?since=&wait=` is a long-poll whose events carry `seq`, `accessoryID`, `characteristicID` and `type`, and
+whose `last` says when Wingman restarted (lower than `since`); `POST /write` takes the characteristic's `id`.
 
 ## Signing: no Developer ID, no notarization
 

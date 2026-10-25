@@ -8,15 +8,23 @@ import UIKit
 @MainActor
 final class HomeStore: NSObject {
     struct Event {
+        /// Counts from 1 for the app's life: `GET /events?since=` answers the newer ones.
+        let seq: Int
         let time: Date
         let home: String
         let accessory: String
+        let accessoryID: String
         let characteristic: String
+        let characteristicID: String
+        let type: String
         let value: Any?
         let appState: String
     }
 
     var onChange: (() -> Void)?
+    /// Called after each value change, for the server's waiting `GET /events`.
+    var onEvent: (() -> Void)?
+    private(set) var lastSeq = 0
     private var manager: HMHomeManager?
     private(set) var homesLoaded = false
     private(set) var events: [Event] = []
@@ -84,13 +92,17 @@ final class HomeStore: NSObject {
         lastValueChange[characteristic.uniqueIdentifier] = Date()
         lastEventAt = Date()
         eventsPerHour[String(ISO8601DateFormatter().string(from: Date()).prefix(13)), default: 0] += 1
+        lastSeq += 1
         let event = Event(
-            time: Date(), home: home(of: accessory)?.name ?? "", accessory: accessory.name,
-            characteristic: characteristic.localizedDescription, value: characteristic.value, appState: Self.appState
+            seq: lastSeq, time: Date(), home: home(of: accessory)?.name ?? "", accessory: accessory.name,
+            accessoryID: accessory.uniqueIdentifier.uuidString, characteristic: characteristic.localizedDescription,
+            characteristicID: characteristic.uniqueIdentifier.uuidString, type: characteristic.characteristicType,
+            value: characteristic.value, appState: Self.appState
         )
         events.append(event)
-        if events.count > 200 { events.removeFirst(events.count - 200) }
+        if events.count > 500 { events.removeFirst(events.count - 500) }
         onChange?()
+        onEvent?()
     }
 
     private func home(of accessory: HMAccessory) -> HMHome? {
@@ -150,14 +162,17 @@ final class HomeStore: NSObject {
         HMCharacteristicTypeTargetSecuritySystemState,
     ]
 
-    /// Writes `value` to the first writable characteristic of `type` (a HAP UUID or HomeKit's description, such as
-    /// "Power State") on the accessory with id or exact name `accessory`.
+    /// Writes `value` to the characteristic with id `type` (its `id` in `/homes`), else to the first writable
+    /// characteristic of `type` (a HAP UUID or HomeKit's description, such as "Power State") on the accessory with id
+    /// or exact name `accessory`.
     func write(accessory: String, characteristic type: String, value: Any) async -> [String: Any] {
         guard let target = homes.flatMap(\.accessories).first(where: { $0.uniqueIdentifier.uuidString == accessory || $0.name == accessory })
         else { return ["error": "no accessory \(accessory)"] }
-        let candidates = target.services.flatMap(\.characteristics).filter {
+        let all = target.services.flatMap(\.characteristics)
+        let byID = all.filter { $0.uniqueIdentifier.uuidString.caseInsensitiveCompare(type) == .orderedSame }
+        let candidates = byID.isEmpty ? all.filter {
             $0.characteristicType.caseInsensitiveCompare(type) == .orderedSame || $0.localizedDescription == type
-        }
+        } : byID
         guard let characteristic = candidates.first(where: { $0.properties.contains(HMCharacteristicPropertyWritable) }) else {
             return ["error": candidates.isEmpty ? "no characteristic \(type)" : "\(type) is not writable"]
         }
@@ -222,6 +237,10 @@ final class HomeStore: NSObject {
     }
 
     private func accessoryJSON(_ accessory: HMAccessory, room: String?) -> [String: Any] {
+        // The bridge it sits behind, so a Homeswift bridge can leave out its own accessories.
+        let bridge = accessory.isBridged ? homes.flatMap(\.accessories).first {
+            $0.uniqueIdentifiersForBridgedAccessories?.contains(accessory.uniqueIdentifier) == true
+        } : nil
         var json: [String: Any] = [
             "id": accessory.uniqueIdentifier.uuidString,
             "name": accessory.name,
@@ -231,6 +250,12 @@ final class HomeStore: NSObject {
             "blocked": accessory.isBlocked,
         ]
         if let room { json["room"] = room }
+        if let bridge {
+            var info: [String: Any] = ["id": bridge.uniqueIdentifier.uuidString, "name": bridge.name]
+            if let manufacturer = bridge.manufacturer { info["manufacturer"] = manufacturer }
+            if let model = bridge.model { info["model"] = model }
+            json["bridge"] = info
+        }
         if let manufacturer = accessory.manufacturer { json["manufacturer"] = manufacturer }
         if let model = accessory.model { json["model"] = model }
         if let firmware = accessory.firmwareVersion { json["firmware"] = firmware }
@@ -240,6 +265,7 @@ final class HomeStore: NSObject {
         if accessory.services.contains(where: { $0.matterEndpointID != nil }) { json["matter"] = true }
         json["services"] = accessory.services.map { service in
             [
+                "id": service.uniqueIdentifier.uuidString,
                 "name": service.name,
                 "type": service.serviceType,
                 "description": service.localizedDescription,
@@ -252,6 +278,7 @@ final class HomeStore: NSObject {
 
     private func characteristicJSON(_ characteristic: HMCharacteristic) -> [String: Any] {
         var json: [String: Any] = [
+            "id": characteristic.uniqueIdentifier.uuidString,
             "type": characteristic.characteristicType,
             "description": characteristic.localizedDescription,
             "properties": characteristic.properties.map(Self.shortProperty),
@@ -264,6 +291,8 @@ final class HomeStore: NSObject {
             if let minimum = metadata.minimumValue { json["min"] = minimum }
             if let maximum = metadata.maximumValue { json["max"] = maximum }
             if let step = metadata.stepValue { json["step"] = step }
+            if let valid = metadata.validValues, !valid.isEmpty { json["validValues"] = valid }
+            if let length = metadata.maxLength { json["maxLength"] = length }
         }
         if let changed = lastValueChange[characteristic.uniqueIdentifier] {
             json["changedAt"] = ISO8601DateFormatter().string(from: changed)
@@ -271,14 +300,20 @@ final class HomeStore: NSObject {
         return json
     }
 
-    func eventsJSON() -> [[String: Any]] {
+    /// The latest value changes, newest first; with `since`, only those after that `seq`, oldest first.
+    func eventsJSON(since: Int? = nil) -> [[String: Any]] {
         let formatter = ISO8601DateFormatter()
-        return events.reversed().map { event in
+        let chosen = since.map { since in events.filter { $0.seq > since } } ?? events.reversed()
+        return chosen.map { event in
             var json: [String: Any] = [
+                "seq": event.seq,
                 "time": formatter.string(from: event.time),
                 "home": event.home,
                 "accessory": event.accessory,
+                "accessoryID": event.accessoryID,
                 "characteristic": event.characteristic,
+                "characteristicID": event.characteristicID,
+                "type": event.type,
                 "appState": event.appState,
             ]
             if let value = event.value { json["value"] = Self.jsonValue(value) }
