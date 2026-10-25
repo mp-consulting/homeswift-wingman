@@ -171,6 +171,16 @@ final class HomeStore: NSObject, WingmanStore {
     func write(accessory: String, characteristic type: String, value: Any) async -> [String: Any] {
         guard let target = homes.flatMap(\.accessories).first(where: { $0.uniqueIdentifier.uuidString == accessory || $0.name == accessory })
         else { return ["error": "no accessory \(accessory)"] }
+        // The native HomeKit action also works when Identify is absent from the service list.
+        if type == "Identify" {
+            guard target.supportsIdentify else { return ["error": "this accessory does not support Identify"] }
+            guard let enabled = value as? Bool, enabled else { return ["error": "Identify requires true"] }
+            let error: Error? = await withCheckedContinuation { continuation in
+                target.identify { error in continuation.resume(returning: error) }
+            }
+            if let error { return ["error": Self.describe(error)] }
+            return ["accessory": target.name, "characteristic": "Identify", "written": true]
+        }
         let all = target.services.flatMap(\.characteristics)
         let byID = all.filter { $0.uniqueIdentifier.uuidString.caseInsensitiveCompare(type) == .orderedSame }
         let candidates = byID.isEmpty ? all.filter {
@@ -249,6 +259,7 @@ final class HomeStore: NSObject, WingmanStore {
             "name": accessory.name,
             "category": accessory.category.localizedDescription,
             "reachable": accessory.isReachable,
+            "supportsIdentify": accessory.supportsIdentify,
             "bridged": accessory.isBridged,
             "blocked": accessory.isBlocked,
         ]

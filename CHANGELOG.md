@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+- Report HomeKit identification support and forward Identify writes to its native identification action.
+
 The first version, 0.2.0 in `project.yml`, not released yet.
 
 ### Fixed

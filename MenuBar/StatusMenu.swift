@@ -87,7 +87,9 @@ public final class WingmanStatusMenu: NSObject {
         let screen = anchorWindow.screen?.visibleFrame ?? anchor
         // Align the leading edge with the menu-bar item; clamp at the screen edge.
         let x = min(max(anchor.minX, screen.minX + 6), screen.maxX - window.frame.width - 6)
-        window.setFrameOrigin(NSPoint(x: x, y: anchor.minY - window.frame.height))
+        // Leave breathing room below the menu bar, like a native MenuBarExtra window.
+        let menuBarGap: CGFloat = 6
+        window.setFrameOrigin(NSPoint(x: x, y: anchor.minY - menuBarGap - window.frame.height))
         window.makeKeyAndOrderFront(nil)
         if outsideClick == nil {
             outsideClick = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -164,6 +166,8 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
     private let status = NSTextField(wrappingLabelWithString: "Starting…")
     private var selectedTab = 0
     private var pendingRemoval: String?
+    private weak var pairingCopyFeedback: NSTextField?
+    private var pairingCopyReset: Task<Void, Never>?
     private var tabButtons: [PillTab] = []
     private let portError = NSTextField(wrappingLabelWithString: "")
     private let statusDot = NSImageView()
@@ -444,10 +448,22 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         section("Pair a bridge")
         if let code = model["pairingCode"] as? String {
             add(label("PAIRING CODE", small: true))
-            let codeLabel = label("\(code.prefix(3)) \(code.suffix(3))")
+            let codeLabel = button("\(code.prefix(3)) \(code.suffix(3))", "copyPairingCode")
+            codeLabel.isBordered = false
             codeLabel.font = .monospacedDigitSystemFont(ofSize: 32, weight: .semibold)
-            codeLabel.isSelectable = true
-            add(codeLabel)
+            codeLabel.contentTintColor = .labelColor
+            codeLabel.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
+            codeLabel.imagePosition = .imageTrailing
+            codeLabel.toolTip = "Click to copy pairing code"
+            codeLabel.setAccessibilityLabel("Copy pairing code")
+            let feedback = label("Copied", small: true)
+            feedback.textColor = .systemGreen
+            feedback.alphaValue = 0
+            pairingCopyFeedback = feedback
+            let codeRow = NSStackView(views: [codeLabel, feedback, NSView()])
+            codeRow.spacing = 10
+            codeRow.alignment = .centerY
+            add(codeRow)
             add(label("Enter this code in Homeswift. Pairing closes automatically after ten minutes.", small: true))
             add(button("Cancel Pairing", "cancelPairing"))
         } else if model["serving"] as? Bool == true {
@@ -603,6 +619,18 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
             let key = String(action.dropFirst(5))
             if !expandedRooms.insert(key).inserted { expandedRooms.remove(key) }
             render()
+        } else if action == "copyPairingCode" {
+            guard let code = model["pairingCode"] as? String else { return }
+            NSPasteboard.general.clearContents()
+            guard NSPasteboard.general.setString(code, forType: .string) else { return }
+            sender.toolTip = "Copied"
+            pairingCopyFeedback?.alphaValue = 1
+            pairingCopyReset?.cancel()
+            pairingCopyReset = Task { @MainActor [weak feedback = pairingCopyFeedback, weak sender] in
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                feedback?.alphaValue = 0
+                sender?.toolTip = "Click to copy pairing code"
+            }
         } else if action == "copyFingerprint" {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(model["fingerprint"] as? String ?? "", forType: .string)

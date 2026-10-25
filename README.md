@@ -206,3 +206,10 @@ when reviewing its glass appearance.
 Requests are limited to 64 connections, 16 KiB of headers and 64 KiB total. A connection has ten seconds to
 complete its TLS handshake and request; responses are bounded to 90 seconds. Removing a paired bridge cancels
 its pending requests. Pairing and removal report storage failures instead of claiming success.
+
+### Identify
+
+Accessory JSON includes HomeKit’s `supportsIdentify` flag. A paired bridge can send
+`POST /write` with `{"accessory":"<id>","characteristic":"Identify","value":true}`
+to invoke HomeKit’s native identification action. It requires “Let bridges change accessories”,
+checks device support and returns HomeKit failures. Room assignments are unchanged.
