@@ -8,7 +8,8 @@ import Network
 /// - `GET /info` (open): Wingman's id, version, certificate fingerprint and whether pairing is open.
 /// - `POST /pair` (open): `{"code": "123456", "name": "<the bridge>"}` → `{"token", "bridge", "wingman", "fingerprint"}`.
 /// - With `Authorization: Bearer <token>`: `GET /status`, `GET /homes`, `GET /events` (the latest value changes;
-///   `?since=<seq>&wait=<seconds>` waits up to 30 s for those after `seq`, oldest first, with `last`),
+///   `?since=<seq>&wait=<seconds>` waits up to 30 s for those after `seq`, oldest first, with `last` and `first`, the
+///   oldest kept: a `since` before `first - 1` missed events),
 ///   `POST /read` (reads every value), `POST /write` (`{"accessory": id or name, "characteristic": its id, HAP UUID or
 ///   description, "value": …}`).
 ///
@@ -181,13 +182,13 @@ final class LocalServer {
         case ("GET", "/homes"): send(["homes": store.homesJSON()], on: connection)
         case ("GET", "/events"):
             guard let since = query["since"].flatMap(Int.init) else {
-                send(["events": store.eventsJSON(), "last": store.lastSeq], on: connection)
+                send(["events": store.eventsJSON(), "last": store.lastSeq, "first": store.firstSeq], on: connection)
                 return
             }
             // Long-poll: answered now when there is something newer, else at the next change or after `wait` seconds.
             let wait = min(max(query["wait"].flatMap(Double.init) ?? 0, 0), 30)
             if store.lastSeq > since || wait == 0 {
-                send(["events": store.eventsJSON(since: since), "last": store.lastSeq], on: connection)
+                send(["events": store.eventsJSON(since: since), "last": store.lastSeq, "first": store.firstSeq], on: connection)
             } else {
                 let id = UUID()
                 waiting.append((id, since, connection))
@@ -226,7 +227,7 @@ final class LocalServer {
     private func answerWaiting(_ id: UUID) {
         guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
         let entry = waiting.remove(at: index)
-        send(["events": store.eventsJSON(since: entry.since), "last": store.lastSeq], on: entry.connection)
+        send(["events": store.eventsJSON(since: entry.since), "last": store.lastSeq, "first": store.firstSeq], on: entry.connection)
     }
 
     private static func query(_ text: String) -> [String: String] {

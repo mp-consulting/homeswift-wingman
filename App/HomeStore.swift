@@ -25,6 +25,8 @@ final class HomeStore: NSObject {
     /// Called after each value change, for the server's waiting `GET /events`.
     var onEvent: (() -> Void)?
     private(set) var lastSeq = 0
+    /// The oldest event kept (500 at most): a client asking `since` an earlier one missed some.
+    var firstSeq: Int { events.first?.seq ?? lastSeq + 1 }
     private var manager: HMHomeManager?
     private(set) var homesLoaded = false
     private(set) var events: [Event] = []
