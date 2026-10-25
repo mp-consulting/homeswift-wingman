@@ -6,9 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-- Report HomeKit identification support and forward Identify writes to its native identification action.
+## [0.2.0] - 2026-10-25
 
-The first version, 0.2.0 in `project.yml`, not released yet.
+- Report HomeKit identification support and forward Identify writes to its native identification action.
+- Copy the pairing code on click, with a copy icon and visible confirmation.
+- Add spacing between the menu-bar icon and the panel.
 
 ### Fixed
 
