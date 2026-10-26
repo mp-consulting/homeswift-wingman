@@ -26,10 +26,8 @@ esac
 PROVISIONING=""
 [ "${PROVISION:-}" = 1 ] && PROVISIONING="-allowProvisioningUpdates -allowProvisioningDeviceRegistration"
 
-DESTINATION='platform=macOS,variant=Mac Catalyst'
-if [ "${CONFIGURATION:-Debug}" = AppStore ]; then
-    DESTINATION='generic/platform=macOS,variant=Mac Catalyst'
-fi
+# Any Mac rather than this one: a runner older than the deployment target can still compile the app.
+DESTINATION='generic/platform=macOS,variant=Mac Catalyst'
 xcodebuild -project HomeswiftWingman.xcodeproj -scheme HomeswiftWingman -configuration "${CONFIGURATION:-Debug}" \
     -destination "$DESTINATION" -derivedDataPath "$CACHE/build" $PROVISIONING \
     $SIGNING -quiet build
