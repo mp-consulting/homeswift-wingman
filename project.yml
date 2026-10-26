@@ -50,6 +50,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSUIElement: true
+        # Only Apple's TLS, CryptoKit and Security frameworks: exempt, so App Store Connect skips the export question.
+        ITSAppUsesNonExemptEncryption: false
         # No window ever shows, so macOS would otherwise end the app as idle.
         NSSupportsAutomaticTermination: false
         NSSupportsSuddenTermination: false
