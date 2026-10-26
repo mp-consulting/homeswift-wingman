@@ -46,10 +46,11 @@ public final class WingmanStatusMenu: NSObject {
         panel.perform = { [weak self] action in self?.actionHandler?(action) }
         #endif
         refreshPanel()
-        // Catalyst reopens an empty host window when the app is activated with none visible,
-        // e.g. after the HomeKit permission prompt. That window has no UIWindow for the scene
-        // delegate to hide, so order it out here as soon as AppKit shows it.
-        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification,
+        // Catalyst opens an empty host window at launch and whenever the app is activated with
+        // none visible, e.g. after the HomeKit permission prompt. That window has no UIWindow for
+        // the scene delegate to hide. Every AppKit update pass makes it transparent, so it is never
+        // drawn, and orders it out once shown.
+        for name in [NSApplication.didUpdateNotification, NSWindow.didBecomeKeyNotification,
                      NSWindow.didChangeOcclusionStateNotification, NSApplication.didBecomeActiveNotification] {
             NotificationCenter.default.addObserver(self, selector: #selector(hideHostWindows), name: name, object: nil)
         }
@@ -57,8 +58,12 @@ public final class WingmanStatusMenu: NSObject {
     }
 
     @objc private func hideHostWindows() {
-        for host in NSApp.windows where host.isVisible && NSStringFromClass(type(of: host)).contains("UINSWindow") {
-            host.orderOut(nil)
+        for host in NSApp.windows where NSStringFromClass(type(of: host)).contains("UINSWindow") {
+            if host.alphaValue != 0 {
+                host.alphaValue = 0
+                host.ignoresMouseEvents = true
+            }
+            if host.isVisible { host.orderOut(nil) }
         }
     }
 
