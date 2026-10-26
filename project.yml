@@ -73,6 +73,9 @@ targets:
           ENABLE_APP_SANDBOX: YES
           ENABLE_HARDENED_RUNTIME: YES
       base:
+        # Installed as "Homeswift Wingman.app"; the module keeps its name, which Info.plist's scene delegate uses.
+        PRODUCT_NAME: Homeswift Wingman
+        PRODUCT_MODULE_NAME: HomeswiftWingman
         CODE_SIGN_ENTITLEMENTS: App/HomeswiftWingman.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.mpconsulting.HomeswiftWingman
         DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO

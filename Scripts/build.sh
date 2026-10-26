@@ -32,7 +32,7 @@ xcodebuild -project HomeswiftWingman.xcodeproj -scheme HomeswiftWingman -configu
     -destination "$DESTINATION" -derivedDataPath "$CACHE/build" $PROVISIONING \
     $SIGNING -quiet build
 
-BUILT="$CACHE/build/Build/Products/${CONFIGURATION:-Debug}-maccatalyst/HomeswiftWingman.app"
+BUILT="$CACHE/build/Build/Products/${CONFIGURATION:-Debug}-maccatalyst/Homeswift Wingman.app"
 rm -rf "$APP"
 mkdir -p "$(dirname "$APP")"
 ditto "$BUILT" "$APP"
@@ -42,7 +42,7 @@ echo "Built $APP"
 
 if [ "${1:-}" = "--install" ]; then
     DEST="$HOME/Applications/Homeswift Wingman.app"
-    pkill -x HomeswiftWingman 2>/dev/null && sleep 1 || true
+    pkill -f 'Wingman[.]app/Contents/MacOS/' 2>/dev/null && sleep 1 || true
     mkdir -p "$HOME/Applications"
     rm -rf "$DEST"
     ditto "$APP" "$DEST"

@@ -47,10 +47,10 @@ build() {
 }
 
 stop() {
-    if pgrep -x HomeswiftWingman >/dev/null; then
-        pkill -x HomeswiftWingman
+    if pgrep -f 'Wingman[.]app/Contents/MacOS/' >/dev/null; then
+        pkill -f 'Wingman[.]app/Contents/MacOS/'
         attempts=0
-        while pgrep -x HomeswiftWingman >/dev/null; do
+        while pgrep -f 'Wingman[.]app/Contents/MacOS/' >/dev/null; do
             attempts=$((attempts + 1))
             if [ "$attempts" -ge 10 ]; then
                 echo 'Wingman did not stop within 10 seconds.' >&2
@@ -80,7 +80,7 @@ case "${1:-help}" in
     restart) stop; open "$APP" ;;
     info) info ;;
     status)
-        if pgrep -x HomeswiftWingman >/dev/null; then
+        if pgrep -f 'Wingman[.]app/Contents/MacOS/' >/dev/null; then
             echo 'Wingman is running.'
         else
             echo 'Wingman is not running.'
@@ -88,7 +88,7 @@ case "${1:-help}" in
         fi
         info
         ;;
-    logs) exec /usr/bin/log stream --style compact --level info --predicate 'process == "HomeswiftWingman"' ;;
+    logs) exec /usr/bin/log stream --style compact --level info --predicate 'process == "Homeswift Wingman"' ;;
     doctor)
         missing=0
         for tool in xcodebuild xcodegen rsync curl; do
