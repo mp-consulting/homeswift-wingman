@@ -83,6 +83,31 @@ import AppKit
         let check = PanelFixtures.descendants(panel.view).compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "checkUpdate" }
         try expect(check?.isEnabled == false && text("Downloading…"), "download disables duplicate checks")
         #endif
+        panel.model = PanelFixtures.model
+        panel.model["offerDemo"] = true
+        try PanelFixtures.click("Home", in: panel)
+        actions = []
+        try PanelFixtures.click("setting:demoMode:1", in: panel)
+        try expect(actions == ["setting:demoMode:1"], "an empty Home tab offers demo mode")
+        panel.model = PanelFixtures.demoModel
+        try expect(text("DEMO MODE") && !PanelFixtures.descendants(panel.view).contains { $0.identifier?.rawValue == "setting:demoMode:1" }, "demo mode is labelled on the Home tab")
+        try PanelFixtures.click("setting:demoMode:0", in: panel)
+        try expect(actions.last == "setting:demoMode:0", "demo mode can be left from the Home tab")
+        try PanelFixtures.click("Bridges", in: panel)
+        try expect(text("DEMO MODE") && text("• Read Demo Home (Synthetic): 7 accessories."), "demo bridge log is shown")
+        try PanelFixtures.click("demoBridge", in: panel)
+        try expect(actions.last == "demoBridge", "demo bridge runs on click")
+        panel.model["pairingCode"] = "482913"
+        let runDemo = PanelFixtures.descendants(panel.view).compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "demoBridge" }
+        try expect(runDemo?.isEnabled == false, "demo bridge waits while pairing is open for a real bridge")
+        try PanelFixtures.click("Settings", in: panel)
+        let toggle = PanelFixtures.descendants(panel.view).compactMap { $0 as? NSSwitch }.first { $0.identifier?.rawValue == "demoMode" }
+        try expect(toggle?.state == .on, "settings show demo mode on")
+        toggle?.performClick(nil)
+        try expect(actions.last == "setting:demoMode:0", "settings switch leaves demo mode")
+        panel.model = PanelFixtures.model
+        try PanelFixtures.click("Home", in: panel)
+        try expect(!text("DEMO MODE"), "no demo label on real homes")
         let directory = URL(fileURLWithPath: CommandLine.arguments[1])
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for (style, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
@@ -99,8 +124,13 @@ import AppKit
             panel.model["pairingUntil"] = Date().addingTimeInterval(600).timeIntervalSince1970
             try PanelFixtures.click("Bridges", in: panel)
             try PanelFixtures.snapshot(panel, at: directory.appendingPathComponent("panel-pairing-\(name).png"))
+            panel.model = PanelFixtures.demoModel
+            for tab in ["Home", "Bridges"] {
+                try PanelFixtures.click(tab, in: panel)
+                try PanelFixtures.snapshot(panel, at: directory.appendingPathComponent("panel-demo-\(tab.lowercased())-\(name).png"))
+            }
         }
-        try expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".png") }.count == 8, "all actual panel screenshots rendered")
-        print("PASS: stable room identities, row reuse, removal confirmation, storage errors and 8 AppKit panel snapshots")
+        try expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".png") }.count == 12, "all actual panel screenshots rendered")
+        print("PASS: stable room identities, row reuse, removal confirmation, storage errors, demo mode labelling and 12 AppKit panel snapshots")
     }
 }

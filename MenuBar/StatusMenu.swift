@@ -343,9 +343,9 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         // Value events update the header/footer without replacing rows under the pointer.
         let keys: [String]
         switch selectedTab {
-        case 1: keys = ["pairingCode", "pairingUntil", "serving", "bridges", "fingerprint", "pairingError"]
-        case 2: keys = ["advertise", "allowChanges", "launchAtLogin", "port", "listening", "settingsError", "automaticUpdateChecks", "updateEnabled", "updateBlocker", "updateStatus", "updateBusy", "updateAvailable", "updateProgress"]
-        default: keys = ["homes", "lastRead"]
+        case 1: keys = ["pairingCode", "pairingUntil", "serving", "bridges", "fingerprint", "pairingError", "demo", "demoLog", "demoBusy", "demoPaired"]
+        case 2: keys = ["advertise", "allowChanges", "launchAtLogin", "demo", "port", "listening", "settingsError", "automaticUpdateChecks", "updateEnabled", "updateBlocker", "updateStatus", "updateBusy", "updateAvailable", "updateProgress"]
+        default: keys = ["homes", "lastRead", "demo", "offerDemo"]
         }
         let content = model.filter { keys.contains($0.key) }
         let signature = NSDictionary(dictionary: ["tab": selectedTab, "rooms": expandedRooms.sorted(), "removal": pendingRemoval ?? "", "content": content])
@@ -422,7 +422,39 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         add(row)
     }
 
+    /// A tinted box that marks synthetic data, so a screenshot of demo mode cannot pass for a real home.
+    private func demoBanner(_ text: String, actions: [NSButton]) {
+        let title = label("DEMO MODE", small: true)
+        title.font = .systemFont(ofSize: 10, weight: .bold)
+        title.textColor = .systemOrange
+        let body = label(text, small: true)
+        let stack = NSStackView(views: [title, body] + (actions.isEmpty ? [] : [NSStackView(views: actions + [NSView()])]))
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        let box = DemoBox()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -10),
+            stack.topAnchor.constraint(equalTo: box.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -8),
+        ])
+        box.setAccessibilityElement(true)
+        box.setAccessibilityRole(.group)
+        box.setAccessibilityLabel("Demo mode")
+        add(box)
+    }
+
     private func homes() {
+        if model["demo"] as? Bool == true {
+            demoBanner("This home and its accessories are synthetic, for trying Wingman without HomeKit devices. Paired bridges see this home instead of yours, and nothing in HomeKit is read or changed.",
+                       actions: [button("Exit Demo Mode", "setting:demoMode:0")])
+        } else if model["offerDemo"] as? Bool == true {
+            add(label("No homes to show. Allow Home access in System Settings › Privacy & Security › Home, or try Wingman with a synthetic home.", small: true))
+            add(button("Try Demo Mode", "setting:demoMode:1"))
+        }
         row("Accessories", button("Refresh", "read"))
         if let read = model["lastRead"] as? String { add(label(read, small: true)) }
         for home in model["homes"] as? [[String: Any]] ?? [] {
@@ -473,6 +505,14 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
             let message = label(error, small: true)
             message.textColor = .systemRed
             add(message)
+        }
+        if model["demo"] as? Bool == true {
+            let busy = model["demoBusy"] as? Bool == true
+            let run = button(busy ? "Running…" : model["demoPaired"] as? Bool == true ? "Run Demo Bridge Again" : "Pair Demo Bridge", "demoBridge")
+            run.isEnabled = !busy && model["pairingCode"] == nil
+            demoBanner("The demo bridge is part of Wingman. It pairs over TLS with a fresh code, reads the demo home, switches a light and is refused a lock change, as a Homeswift bridge would.",
+                       actions: [run])
+            for line in model["demoLog"] as? [String] ?? [] { add(label("• \(line)", small: true), verticalPadding: 2) }
         }
         section("Pair a bridge")
         if let code = model["pairingCode"] as? String {
@@ -551,6 +591,16 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         _ = checkPort()
         add(label("Without Bonjour, bridges need this Mac’s address. Disabling changes makes paired bridges read-only. Locks, garage doors and alarms are never changed through Wingman.", small: true))
         if let error = model["settingsError"] as? String { add(label(error, small: true)) }
+        section("Demo")
+        let demo = NSSwitch()
+        demo.controlSize = .small
+        demo.state = model["demo"] as? Bool == true ? .on : .off
+        demo.identifier = NSUserInterfaceItemIdentifier("demoMode")
+        demo.setAccessibilityLabel("Demo mode")
+        demo.target = self
+        demo.action = #selector(setting(_:))
+        row("Demo mode", demo)
+        add(label("Serves a synthetic home instead of yours, to try Wingman without HomeKit devices or a Homeswift bridge. Turning it off removes the demo bridge.", small: true))
         section("Privacy")
         add(label("Wingman shares your Home data only with bridges you explicitly pair. A bridge may forward data to services you configure, including AI providers. Remove a bridge to revoke its access; disable changes for read-only access. Wingman does not send analytics to its developer.", small: true))
         section("Updates")
@@ -697,6 +747,20 @@ private extension NSColor {
                 ? NSColor(white: 0.82, alpha: 1) : NSColor(white: 0.28, alpha: 1)
         }
     }
+}
+
+/// The orange outline and tint that mark demo mode, redrawn for light and dark appearances.
+@MainActor
+private final class DemoBox: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        NSColor.systemOrange.withAlphaComponent(0.1).setFill()
+        shape.fill()
+        NSColor.systemOrange.withAlphaComponent(0.6).setStroke()
+        shape.lineWidth = 1
+        shape.stroke()
+    }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
 }
 
 /// The entire room header is a button; counts and disclosure stay aligned as names grow.

@@ -5,10 +5,14 @@ enum Settings {
     static let advertiseKey = "advertise"
     static let portKey = "port"
     static let allowChangesKey = "allowChanges"
+    static let demoModeKey = "demoMode"
 
     static func register() {
-        UserDefaults.standard.register(defaults: [advertiseKey: true, portKey: Int(LocalServer.defaultPort), allowChangesKey: true])
+        UserDefaults.standard.register(defaults: [advertiseKey: true, portKey: Int(LocalServer.defaultPort), allowChangesKey: true, demoModeKey: false])
     }
+
+    /// Serve the synthetic demo home instead of HomeKit's homes, for App Review and evaluation.
+    static var demoMode: Bool { UserDefaults.standard.bool(forKey: demoModeKey) }
 
     /// Advertise `_homeswift-wingman._tcp` over Bonjour; off, a bridge needs the address by hand.
     static var advertise: Bool { UserDefaults.standard.bool(forKey: advertiseKey) }

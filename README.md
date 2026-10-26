@@ -216,6 +216,18 @@ Accessory JSON includes HomeKit’s `supportsIdentify` flag. A paired bridge can
 to invoke HomeKit’s native identification action. It requires “Let bridges change accessories”,
 checks device support and returns HomeKit failures. Room assignments are unchanged.
 
+## Demo mode
+
+Settings › Demo (or **Try Demo Mode** when Wingman has no Home access or no homes) serves a synthetic
+"Demo Home (Synthetic)" instead of HomeKit's homes: seven accessories named "Demo …", one not responding.
+Every tab shows an orange DEMO MODE banner, the status line says so, and `/status` and `/homes` carry `"demo": true`.
+Writes change only these in-memory values; lock, garage door and alarm targets are refused as usual.
+
+In demo mode the Bridges tab adds a **demo bridge** that runs inside Wingman: it pairs with a fresh code over TLS,
+pinning the certificate, reads the home, switches the demo floor lamp and is refused an unlock. Remove it like any
+bridge to see its token revoked on the next run. Turning demo mode off removes it. Bridges already paired see the
+synthetic home while demo mode is on.
+
 ## Mac App Store preparation
 
 The `AppStore` build configuration enables sandboxed networking, requires macOS 27.0.1+ on Apple Silicon,

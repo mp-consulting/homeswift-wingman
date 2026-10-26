@@ -69,6 +69,7 @@ func expect(_ condition: Bool, _ message: String) throws {
         try parser()
         try pairing()
         try await network()
+        try await demo()
         print("PASS: parser, pairing transactions, last-seen persistence, network limits, revocation and listener recovery")
     }
 
@@ -92,6 +93,46 @@ func expect(_ condition: Bool, _ message: String) throws {
             guard case .invalid = HTTPRequest.parse(data) else { throw TestFailure(message: "accepted oversized request or extra body") }
         }
         print("PASS: finite waits and strict incremental HTTP framing")
+    }
+
+    /// The synthetic home: labelled, writable like a real one, with the same security refusals.
+    @MainActor static func demo() async throws {
+        let demo = DemoStore()
+        var changes = 0
+        var events = 0
+        demo.onChange = { changes += 1 }
+        demo.onEvent = { events += 1 }
+        let home = demo.homesJSON()[0]
+        try expect(home["name"] as? String == "Demo Home (Synthetic)" && home["demo"] as? Bool == true, "demo home is labelled")
+        try expect(demo.statusJSON()["demo"] as? Bool == true, "status reports demo mode")
+        let accessories = home["accessories"] as? [[String: Any]] ?? []
+        try expect(accessories.count == 7 && accessories.allSatisfy { ($0["name"] as? String ?? "").hasPrefix("Demo ") }, "every demo accessory is named Demo")
+        let off = await demo.write(accessory: "Demo Floor Lamp", characteristic: "Power State", value: false)
+        try expect(off["written"] as? Bool == false && demo.lastSeq == 1 && events == 1 && changes >= 1, "write changes the value and records an event")
+        try expect(demo.eventsJSON(since: 0).first?["accessory"] as? String == "Demo Floor Lamp", "event is served after since")
+        try expect(demo.panelHomes().description.contains("Lightbulb · Off"), "panel shows the written state")
+        let dim = await demo.write(accessory: "Demo Floor Lamp", characteristic: DemoStore.brightness, value: 250)
+        try expect(dim["written"] as? Int == 100, "brightness is clamped to its range")
+        let lock = await demo.write(accessory: "Demo Front Door Lock", characteristic: "Lock Mechanism Target State", value: 0)
+        try expect((lock["error"] as? String ?? "").contains("security control") && demo.lastSeq == 2, "lock write is refused without an event")
+        let garage = await demo.write(accessory: "Demo Garage Door", characteristic: DemoStore.targetDoorState, value: 0)
+        try expect((garage["error"] as? String ?? "").contains("security control"), "garage write is refused")
+        let sensor = await demo.write(accessory: "Demo Motion Sensor", characteristic: "Motion Detected", value: true)
+        try expect((sensor["error"] as? String ?? "").contains("not responding"), "unreachable accessory refuses writes")
+        let wrong = await demo.write(accessory: "Demo Floor Lamp", characteristic: "Power State", value: "on")
+        try expect(wrong["error"] != nil, "mistyped value is refused")
+        try expect((await demo.write(accessory: "Nope", characteristic: "Power State", value: true))["error"] as? String == "no accessory Nope", "unknown accessory")
+        let read = await demo.readAll()
+        try expect(read["succeeded"] as? Int ?? 0 > 0 && (read["failures"] as? [String: Int])?.values.reduce(0, +) == 1, "read reports the unreachable sensor")
+        var enabled = false
+        let live = FakeStore()
+        let served = DemoSwitchStore(live: live, demo: demo) { enabled }
+        try expect(served.homeIdentifiers == ["fixture-home"], "live homes while demo mode is off")
+        enabled = true
+        try expect(served.homeIdentifiers == [DemoStore.homeID] && served.lastSeq == demo.lastSeq, "demo home while demo mode is on")
+        _ = await served.write(accessory: "Demo Ceiling Light", characteristic: "Power State", value: true)
+        try expect(live.writes == 0 && demo.lastSeq == 3, "demo writes never reach the live store")
+        print("PASS: demo home labelling, writes, events, security refusals and store switching")
     }
 
     @MainActor static func pairing() throws {

@@ -54,7 +54,22 @@ Home access and pairs each bridge using a short-lived code. Connections use TLS 
 tokens. Users can revoke a bridge and disable accessory changes. Lock, garage-door and alarm
 writes are blocked. The app lives in the menu bar and requires Home data for its core function.
 
-Provide a reproducible review environment or a clearly identified synthetic demonstration
-mode, review instructions, screenshots, support/privacy URLs, and beta contact information.
-A reviewer must be able to assess functionality without access to the developer's private home.
-These submission materials and App Store Connect setup still need to be completed.
+A reviewer must be able to assess functionality without access to the developer's private home, so Wingman has a
+demo mode (see the README). Suggested App Review notes:
+
+    Wingman is a menu bar app: after launch, click the winged-house icon in the menu bar.
+    No HomeKit accessories or Homeswift bridge are needed to review it.
+    1. Allow Home access when asked (or decline: Wingman then offers the demo).
+    2. Home tab: click "Try Demo Mode", or turn on Settings > Demo mode. A synthetic
+       "Demo Home (Synthetic)" appears, marked DEMO MODE.
+    3. Bridges tab: click "Pair Demo Bridge". A built-in demo bridge pairs over TLS with
+       a one-time code, reads the home, switches "Demo Floor Lamp" and is refused an unlock,
+       showing each step. The lamp's new state shows in the Home tab.
+    4. Click "Remove…" next to "Demo Bridge (Synthetic)" to revoke it, then "Pair Demo
+       Bridge" again: its old token is rejected before it pairs anew.
+    5. Settings: "Let bridges change accessories" off makes bridges read-only; the demo
+       bridge then reports its lamp change refused.
+    Demo mode never reads or changes HomeKit data. Turn it off in Settings.
+
+Still to complete in App Store Connect: screenshots (demo mode is safe to capture), support and privacy URLs,
+and beta contact information.

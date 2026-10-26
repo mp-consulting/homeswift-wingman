@@ -19,6 +19,31 @@ import AppKit
         ]]],
     ]
 
+    static var demoModel: [String: Any] {
+        var model = Self.model
+        model["demo"] = true
+        model["headline"] = "Demo mode: synthetic home, not your HomeKit data"
+        model["level"] = "warning"
+        model["summary"] = "Demo: 1 home, 4 rooms, 7 accessories"
+        model["bridges"] = [["id": "demo", "name": "Demo Bridge (Synthetic)"]]
+        model["demoPaired"] = true
+        model["demoLog"] = [
+            "Paired over TLS with code 482 913, pinning Wingman’s certificate.",
+            "Read Demo Home (Synthetic): 7 accessories.",
+            "Turned Demo Floor Lamp off. See it in the Home tab.",
+            "Unlock refused: Lock Mechanism Target State is a security control; not written through Wingman.",
+        ]
+        model["homes"] = [["id": "demo-home", "name": "Demo Home (Synthetic)", "rooms": [
+            ["id": "demo-living", "name": "Living Room", "accessories": [
+                ["id": "lamp", "name": "Demo Floor Lamp", "detail": "Lightbulb · Off", "symbol": "lamp.floor", "reachable": true],
+            ]],
+            ["id": "demo-entrance", "name": "Entrance", "accessories": [
+                ["id": "lock", "name": "Demo Front Door Lock", "detail": "Door Lock · Locked", "symbol": "lock", "reachable": true],
+            ]],
+        ]]]
+        return model
+    }
+
     static func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
     static func click(_ identifier: String, in controller: WingmanPopoverController) throws {
         guard let button = descendants(controller.view).compactMap({ $0 as? NSButton }).first(where: { $0.identifier?.rawValue == identifier || $0.title == identifier }) else {

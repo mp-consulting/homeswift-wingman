@@ -3,31 +3,38 @@ import UIKit
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     let store = HomeStore()
+    let demo = DemoStore()
     let pairing = Pairing()
     let panel = LoginSettings()
     private var server: LocalServer?
+    private var demoBridge: DemoBridge?
     private var menuBar: MenuBarBridge?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         Settings.register()
         var problem: String?
         do {
-            let server = LocalServer(store: store, pairing: pairing, identity: try Identity.load())
+            let served = DemoSwitchStore(live: store, demo: demo) { Settings.demoMode }
+            let server = LocalServer(store: served, pairing: pairing, identity: try Identity.load())
             server.start()
             self.server = server
+            demoBridge = DemoBridge(pairing: pairing, fingerprint: server.fingerprint) { [weak server] in server?.port ?? Settings.port }
         } catch {
             // An unsigned build has no keychain access group, so no identity: it serves nothing rather than serving in the clear.
             problem = "No TLS identity: \(error)"
             NSLog("Wingman: \(problem!)")
         }
-        let menuBar = MenuBarBridge(store: store, pairing: pairing, server: server, panel: panel, problem: problem)
+        let menuBar = MenuBarBridge(store: store, demo: demo, demoBridge: demoBridge, pairing: pairing, server: server, panel: panel, problem: problem)
         self.menuBar = menuBar
         store.onChange = { [weak self] in
             self?.server?.homesChanged()
             self?.menuBar?.refresh()
         }
+        demo.onChange = { [weak self] in self?.menuBar?.refresh() }
+        demoBridge?.onChange = { [weak self] in self?.menuBar?.refresh() }
         pairing.onChange = { [weak self] in self?.menuBar?.refresh() }
-        store.onEvent = { [weak self] in self?.server?.eventsArrived() }
+        store.onEvent = { [weak self] in if !Settings.demoMode { self?.server?.eventsArrived() } }
+        demo.onEvent = { [weak self] in if Settings.demoMode { self?.server?.eventsArrived() } }
         server?.onChange = { [weak self] in self?.menuBar?.refresh() }
         store.start()
         return true

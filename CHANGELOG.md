@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+- Add a clearly labelled demo mode (Settings › Demo, or Try Demo Mode when there is no home) that serves a synthetic home, and a built-in demo bridge that pairs over TLS, switches a light and is refused a lock change, so Wingman can be evaluated without HomeKit devices or a Homeswift bridge.
+- Hide the empty Catalyst window that appeared at launch and after granting Home access.
 - Prepare a sandboxed macOS 27.0.1+ App Store configuration with Apple-managed updates, privacy manifest, archive/export tooling, and regression coverage.
 
 ## [0.2.0] - 2026-10-25
