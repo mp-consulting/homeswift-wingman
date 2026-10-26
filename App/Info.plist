@@ -24,6 +24,8 @@
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>27.0.1</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSBonjourServices</key>
