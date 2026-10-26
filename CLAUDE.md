@@ -29,8 +29,10 @@ Builds run from a copy in `~/Library/Caches/HomeswiftWingman/source`; edit the c
 
 - The iOS deployment target must stay at the Catalyst iOS-support version (27.0 for macOS 27.0.1). A higher value
   stops the app building or running on this Mac. The macOS minimum (`LSMinimumSystemVersion`) is separate.
-- Catalyst creates an empty host window at launch and on reactivation. `WingmanStatusMenu.hideHostWindows` makes it
-  transparent and orders it out. The scene delegate cannot do this, because no UIWindow exists.
+- Catalyst creates an empty host window at launch and on reactivation. Never order it out: HomeKit refuses accessory
+  writes (`HMErrorDomain 80: Missing entitlement for API`) from an app with no window on screen, while reads keep
+  working. `HostWindow` in `MenuBar/StatusMenu.swift` makes it transparent and click-through just before AppKit first
+  shows it. The scene delegate cannot do this, because no UIWindow exists.
 - Only one copy of the app should be installed. macOS relaunches whichever copy Launch Services prefers (for
   example after a Home permission change), so a stale `/Applications` copy hides fixes in `~/Applications`.
 - Lock, garage door and alarm writes are always refused, in `HomeStore` and `DemoStore`. Keep the two in step.

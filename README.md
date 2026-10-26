@@ -176,6 +176,9 @@ cannot ship this app with HomeKit. The ways out:
   while HomeKit still listed them as reachable: for Matter devices `reachable` lags, and error 74 on a write means
   the device did not answer. No event came back from the light after the write; HomeKit's value is the one written.
   Lock, garage door and alarm targets are refused before HomeKit is asked.
+- **Writing needs a window on screen:** with Catalyst's host window ordered out, every write fails with
+  `HMErrorDomain 80` ("Missing entitlement for API") while reads and events go on. Wingman keeps that window on
+  screen, transparent and click-through.
 - **Soak test:** `/status` has `startedAt`, `lastEventAt` and `eventsPerHour` (UTC hours); a gap across a night of
   screen lock and sleep would show HomeKit stopped sending.
 

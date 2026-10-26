@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 - Add a clearly labelled demo mode (Settings › Demo, or Try Demo Mode when there is no home) that serves a synthetic home, and a built-in demo bridge that pairs over TLS, switches a light and is refused a lock change, so Wingman can be evaluated without HomeKit devices or a Homeswift bridge.
-- Hide the empty Catalyst window that appeared at launch and after granting Home access.
+- Hide the empty Catalyst window that appeared at launch and after granting Home access. It stays on screen, transparent and click-through: HomeKit refuses accessory changes from an app without a window on screen, which made 0.2.0 builds 5 and 6 fail every write with `HMErrorDomain 80`.
 - Every build, App Store and TestFlight ones included, installs as "Homeswift Wingman.app" (it was "HomeswiftWingman.app"); the process is now "Homeswift Wingman". The bundle identifier, Home permission and paired bridges are unchanged.
 - Prepare a sandboxed macOS 27.0.1+ App Store configuration with Apple-managed updates, privacy manifest, archive/export tooling, and regression coverage.
 

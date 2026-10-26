@@ -47,9 +47,10 @@ public final class WingmanStatusMenu: NSObject {
         #endif
         refreshPanel()
         // Catalyst opens an empty host window at launch and whenever the app is activated with
-        // none visible, e.g. after the HomeKit permission prompt. That window has no UIWindow for
-        // the scene delegate to hide. Every AppKit update pass makes it transparent, so it is never
-        // drawn, and orders it out once shown.
+        // none visible, e.g. after the HomeKit permission prompt. It must stay on screen: HomeKit
+        // refuses accessory writes (HMErrorDomain 80) from an app with no window on screen. So it is
+        // made invisible just before AppKit first shows it, and on every update pass after that.
+        HostWindow.concealBeforeOrdering()
         for name in [NSApplication.didUpdateNotification, NSWindow.didBecomeKeyNotification,
                      NSWindow.didChangeOcclusionStateNotification, NSApplication.didBecomeActiveNotification] {
             NotificationCenter.default.addObserver(self, selector: #selector(hideHostWindows), name: name, object: nil)
@@ -58,13 +59,7 @@ public final class WingmanStatusMenu: NSObject {
     }
 
     @objc private func hideHostWindows() {
-        for host in NSApp.windows where NSStringFromClass(type(of: host)).contains("UINSWindow") {
-            if host.alphaValue != 0 {
-                host.alphaValue = 0
-                host.ignoresMouseEvents = true
-            }
-            if host.isVisible { host.orderOut(nil) }
-        }
+        for window in NSApp.windows { HostWindow.conceal(window) }
     }
 
 
@@ -746,6 +741,36 @@ private extension NSColor {
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(white: 0.82, alpha: 1) : NSColor(white: 0.28, alpha: 1)
         }
+    }
+}
+
+/// Catalyst's empty host window, kept on screen for HomeKit but transparent, click-through and out of the way.
+@MainActor
+private enum HostWindow {
+    static func conceal(_ window: NSWindow) {
+        guard window.alphaValue != 0, NSStringFromClass(type(of: window)).contains("UINSWindow") else { return }
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+        window.isExcludedFromWindowsMenu = true
+        window.collectionBehavior = [.transient, .ignoresCycle, .stationary, .fullScreenAuxiliary]
+        window.setFrame(NSRect(x: 0, y: 0, width: 1, height: 1), display: false)
+    }
+
+    private static var installed = false
+
+    /// Wraps `-[NSWindow orderWindow:relativeTo:]`, which every way of showing a window goes through, so the host
+    /// window is transparent before its first frame reaches the screen.
+    static func concealBeforeOrdering() {
+        guard !installed, let method = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.order(_:relativeTo:))) else { return }
+        installed = true
+        typealias Order = @convention(c) (NSWindow, Selector, Int, Int) -> Void
+        let original = unsafeBitCast(method_getImplementation(method), to: Order.self)
+        let selector = #selector(NSWindow.order(_:relativeTo:))
+        let replacement: @convention(block) (NSWindow, Int, Int) -> Void = { window, mode, other in
+            if mode != NSWindow.OrderingMode.out.rawValue { MainActor.assumeIsolated { conceal(window) } }
+            original(window, selector, mode, other)
+        }
+        method_setImplementation(method, imp_implementationWithBlock(replacement))
     }
 }
 
