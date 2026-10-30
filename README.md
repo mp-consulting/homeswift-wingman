@@ -104,10 +104,11 @@ curl -sk -H "$H" https://127.0.0.1:8619/write -d '{"accessory": "<id>", "charact
 Homeswift's Wingman plugin (`Plugins/Wingman` in the homeswift repository) uses it this way: `/homes` gives every
 service and characteristic an `id` (HomeKit's `uniqueIdentifier`), HomeKit's ranges (`min`, `max`, `step`,
 `validValues`) and, for a bridged accessory, its `bridge` (so a Homeswift bridge leaves out its own accessories);
-`/events?since=&wait=` is a long-poll whose events carry `seq`, `accessoryID`, `characteristicID` and `type`, whose
-`last` says when Wingman restarted (lower than `since`) and whose `first` is the oldest event kept (500 at most: a
-`since` before `first - 1` missed some, and the plugin reads `/homes` again); `POST /write` takes the characteristic's
-`id`.
+`/events?since=&wait=` is a long-poll whose events carry `seq`, `kind`, `accessoryID`, `characteristicID` and `type`
+(a `kind` of `homes`, with no characteristic, says accessories, rooms, names or reachability changed: the plugin reads
+`/homes` again), whose `last` says when Wingman restarted (lower than `since`) and whose `first` is the oldest event
+kept (500 at most: a `since` before `first - 1` missed some, and the plugin reads `/homes` again); `POST /write` takes
+the characteristic's `id`.
 
 ## Building
 

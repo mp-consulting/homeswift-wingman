@@ -13,17 +13,20 @@ final class HomeStore: NSObject, WingmanStore {
         let seq: Int
         let time: Date
         let home: String
+        /// "value" for a characteristic's new value; "homes" when what `GET /homes` answers changed (accessories,
+        /// rooms, names, reachability), for bridges to read the homes again. A "homes" event names no characteristic.
+        let kind: String
         let accessory: String
-        let accessoryID: String
-        let characteristic: String
-        let characteristicID: String
-        let type: String
+        let accessoryID: String?
+        let characteristic: String?
+        let characteristicID: String?
+        let type: String?
         let value: Any?
         let appState: String
     }
 
     var onChange: (() -> Void)?
-    /// Called after each value change, for the server's waiting `GET /events`.
+    /// Called after each event, for the server's waiting `GET /events`.
     var onEvent: (() -> Void)?
     private(set) var lastSeq = 0
     /// The oldest event kept (500 at most): a client asking `since` an earlier one missed some.
@@ -39,6 +42,8 @@ final class HomeStore: NSObject, WingmanStore {
     private(set) var lastRefresh: [String: Any]?
     private var notificationErrors: [String: Int] = [:]
     private var lastValueChange: [UUID: Date] = [:]
+    /// HomeKit reports one edit in Home as several delegate calls: they make one "homes" event a second later.
+    private var pendingHomesChange: (home: String, accessory: String)?
 
     var homes: [HMHome] { manager?.homes ?? [] }
 
@@ -97,11 +102,32 @@ final class HomeStore: NSObject, WingmanStore {
         eventsPerHour[String(ISO8601DateFormatter().string(from: Date()).prefix(13)), default: 0] += 1
         lastSeq += 1
         let event = Event(
-            seq: lastSeq, time: Date(), home: home(of: accessory)?.name ?? "", accessory: accessory.name,
+            seq: lastSeq, time: Date(), home: home(of: accessory)?.name ?? "", kind: "value", accessory: accessory.name,
             accessoryID: accessory.uniqueIdentifier.uuidString, characteristic: characteristic.localizedDescription,
             characteristicID: characteristic.uniqueIdentifier.uuidString, type: characteristic.characteristicType,
             value: characteristic.value, appState: Self.appState
         )
+        append(event)
+    }
+
+    /// Notes a change to the homes' structure. Value statistics (`eventCount`, `eventsPerHour`) leave it out.
+    private func homesChanged(_ home: HMHome?, _ accessory: HMAccessory? = nil) {
+        onChange?()
+        guard pendingHomesChange == nil else { return }
+        pendingHomesChange = (home?.name ?? "", accessory?.name ?? "")
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, let pending = self.pendingHomesChange else { return }
+            self.pendingHomesChange = nil
+            self.lastSeq += 1
+            self.append(Event(
+                seq: self.lastSeq, time: Date(), home: pending.home, kind: "homes", accessory: pending.accessory,
+                accessoryID: nil, characteristic: nil, characteristicID: nil, type: nil, value: nil, appState: Self.appState
+            ))
+        }
+    }
+
+    private func append(_ event: Event) {
         events.append(event)
         if events.count > 500 { events.removeFirst(events.count - 500) }
         onChange?()
@@ -323,13 +349,14 @@ final class HomeStore: NSObject, WingmanStore {
                 "seq": event.seq,
                 "time": formatter.string(from: event.time),
                 "home": event.home,
+                "kind": event.kind,
                 "accessory": event.accessory,
-                "accessoryID": event.accessoryID,
-                "characteristic": event.characteristic,
-                "characteristicID": event.characteristicID,
-                "type": event.type,
                 "appState": event.appState,
             ]
+            if let id = event.accessoryID { json["accessoryID"] = id }
+            if let characteristic = event.characteristic { json["characteristic"] = characteristic }
+            if let id = event.characteristicID { json["characteristicID"] = id }
+            if let type = event.type { json["type"] = type }
             if let value = event.value { json["value"] = Self.jsonValue(value) }
             return json
         }
@@ -385,25 +412,26 @@ extension HomeStore: @preconcurrency HMHomeManagerDelegate {
 
     func homeManager(_ manager: HMHomeManager, didAdd home: HMHome) {
         watchAll()
-        onChange?()
+        homesChanged(home)
     }
 
     func homeManager(_ manager: HMHomeManager, didRemove home: HMHome) {
-        onChange?()
+        homesChanged(home)
     }
 }
 
 extension HomeStore: @preconcurrency HMHomeDelegate {
     func home(_ home: HMHome, didAdd accessory: HMAccessory) {
         watch(accessory)
-        onChange?()
+        homesChanged(home, accessory)
     }
 
-    func home(_ home: HMHome, didRemove accessory: HMAccessory) { onChange?() }
-    func home(_ home: HMHome, didUpdate room: HMRoom, for accessory: HMAccessory) { onChange?() }
-    func home(_ home: HMHome, didAdd room: HMRoom) { onChange?() }
-    func home(_ home: HMHome, didRemove room: HMRoom) { onChange?() }
-    func home(_ home: HMHome, didUpdateNameFor room: HMRoom) { onChange?() }
+    func home(_ home: HMHome, didRemove accessory: HMAccessory) { homesChanged(home, accessory) }
+    func home(_ home: HMHome, didUpdate room: HMRoom, for accessory: HMAccessory) { homesChanged(home, accessory) }
+    func home(_ home: HMHome, didAdd room: HMRoom) { homesChanged(home) }
+    func home(_ home: HMHome, didRemove room: HMRoom) { homesChanged(home) }
+    func home(_ home: HMHome, didUpdateNameFor room: HMRoom) { homesChanged(home) }
+    func homeDidUpdateName(_ home: HMHome) { homesChanged(home) }
 }
 
 extension HomeStore: @preconcurrency HMAccessoryDelegate {
@@ -411,10 +439,10 @@ extension HomeStore: @preconcurrency HMAccessoryDelegate {
         record(characteristic, of: accessory)
     }
 
-    func accessoryDidUpdateReachability(_ accessory: HMAccessory) { onChange?() }
-    func accessoryDidUpdateName(_ accessory: HMAccessory) { onChange?() }
+    func accessoryDidUpdateReachability(_ accessory: HMAccessory) { homesChanged(home(of: accessory), accessory) }
+    func accessoryDidUpdateName(_ accessory: HMAccessory) { homesChanged(home(of: accessory), accessory) }
     func accessoryDidUpdateServices(_ accessory: HMAccessory) {
         watch(accessory)
-        onChange?()
+        homesChanged(home(of: accessory), accessory)
     }
 }
