@@ -71,5 +71,17 @@ demo mode (see the README). Suggested App Review notes:
        bridge then reports its lamp change refused.
     Demo mode never reads or changes HomeKit data. Turn it off in Settings.
 
+    Network server entitlement: Wingman listens for incoming connections, which is its
+    core function. It serves the user's Apple Home to Homeswift bridges on their local
+    network: an NWListener on TCP port 8619 (configurable in Settings), TLS 1.2 or later
+    with an on-device certificate, advertised over Bonjour as _homeswift-wingman._tcp
+    (hence NSLocalNetworkUsageDescription). Bridges connect to Wingman, pair with a
+    one-time code and then use a revocable token, so network.client alone is not enough.
+    The demo bridge in step 3 connects to this same listener.
+
+Build 0.2.0 (7) was rejected under 2.4.5 by an automated check that flagged `com.apple.security.network.server` as
+unused. Keep the paragraph above in the App Review notes, and reply with it if the check fires again: the entitlement
+is needed by `LocalServer`, so do not remove it.
+
 Still to complete in App Store Connect: screenshots (demo mode is safe to capture), support and privacy URLs,
 and beta contact information.

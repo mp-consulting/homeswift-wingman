@@ -182,7 +182,7 @@ final class DemoStore: WingmanStore {
         let time = now()
         lastEventAt = time
         events.append([
-            "seq": lastSeq, "time": ISO8601DateFormatter().string(from: time), "home": Self.homeName,
+            "seq": lastSeq, "time": ISO8601DateFormatter().string(from: time), "home": Self.homeName, "kind": "value",
             "accessory": accessory.name, "accessoryID": accessory.id, "characteristic": characteristic.description,
             "characteristicID": characteristic.id, "type": characteristic.type, "value": characteristic.value,
             "appState": "active", "demo": true,

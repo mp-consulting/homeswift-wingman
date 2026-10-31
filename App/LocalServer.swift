@@ -382,8 +382,16 @@ final class LocalServer {
         let body = (try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])) ?? Data("{}".utf8)
         var response = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
         response.append(body)
-        connection.send(content: response, completion: .contentProcessed { [weak self] _ in
-            MainActor.assumeIsolated { self?.close(connection) }
+        // Half-close (TLS close_notify, then FIN) and cancel only once the bridge hangs up, or at the response
+        // deadline. Cancelling as soon as the send is processed stalls a response still in flight and drops it
+        // after about 10 seconds: a bridge on the LAN saw `uncleanShutdown` reading a few hundred KB of homes.
+        connection.send(content: response, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] error in
+            MainActor.assumeIsolated {
+                guard error == nil else { self?.close(connection); return }
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] _, _, _, _ in
+                    MainActor.assumeIsolated { self?.close(connection) }
+                }
+            }
         })
     }
 }
