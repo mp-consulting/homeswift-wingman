@@ -4,7 +4,7 @@ import AppKit
 @MainActor enum PanelFixtures {
     static let model: [String: Any] = [
         "headline": "Serving 1 bridge on port 8619", "level": "ok", "summary": "1 home, 2 rooms, 3 accessories",
-        "port": 8619, "listening": true, "serving": true, "advertise": true, "allowChanges": true,
+        "port": 8619, "listening": true, "serving": true, "advertise": true, "allowChanges": true, "allowSecurity": false,
         "updateEnabled": true, "automaticUpdateChecks": true, "updateStatus": "Wingman is up to date.",
         "launchAtLogin": false, "version": "0.2.0", "fingerprint": String(repeating: "3f9a0c71", count: 8),
         "bridges": [["id": "demo-bridge", "name": "Demo Bridge"]],

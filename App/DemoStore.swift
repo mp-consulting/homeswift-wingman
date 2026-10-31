@@ -3,7 +3,7 @@ import Foundation
 /// A synthetic home for App Review and evaluation, served through the same API as HomeKit's homes.
 ///
 /// Nothing here touches HomeKit: names say "Demo" and "(Synthetic)", `/status` reports `"demo": true`, and writes only
-/// change these in-memory values. Locks, garage doors and alarms refuse writes exactly as real ones do.
+/// change these in-memory values. Locks, garage doors and alarms follow the same security setting as real ones.
 @MainActor
 final class DemoStore: WingmanStore {
     struct Characteristic {
@@ -102,7 +102,7 @@ final class DemoStore: WingmanStore {
     }
 
     /// Accepts the same accessory and characteristic forms as `HomeStore.write`.
-    func write(accessory: String, characteristic type: String, value: Any) async -> [String: Any] {
+    func write(accessory: String, characteristic type: String, value: Any, allowSecurity: Bool) async -> [String: Any] {
         guard let index = accessories.firstIndex(where: { $0.id == accessory || $0.name == accessory })
         else { return ["error": "no accessory \(accessory)"] }
         let target = accessories[index]
@@ -119,8 +119,8 @@ final class DemoStore: WingmanStore {
             return ["error": candidates.isEmpty ? "no characteristic \(type)" : "\(type) is not writable"]
         }
         let characteristic = target.characteristics[slot]
-        if Self.securityTypes.contains(characteristic.type) {
-            return ["error": "\(characteristic.description) is a security control; not written through Wingman"]
+        if !allowSecurity, Self.securityTypes.contains(characteristic.type) {
+            return ["error": "\(characteristic.description) is a security control; turn on Let bridges operate locks and doors in Wingman's settings"]
         }
         guard let accepted = Self.coerce(value, to: characteristic) else {
             return ["error": "\(characteristic.description) expects a \(characteristic.format) value"]
@@ -317,7 +317,7 @@ final class DemoSwitchStore: WingmanStore {
     func homesJSON() -> [[String: Any]] { current.homesJSON() }
     func eventsJSON(since: Int?) -> [[String: Any]] { current.eventsJSON(since: since) }
     func readAll() async -> [String: Any] { await current.readAll() }
-    func write(accessory: String, characteristic: String, value: Any) async -> [String: Any] {
-        await current.write(accessory: accessory, characteristic: characteristic, value: value)
+    func write(accessory: String, characteristic: String, value: Any, allowSecurity: Bool) async -> [String: Any] {
+        await current.write(accessory: accessory, characteristic: characteristic, value: value, allowSecurity: allowSecurity)
     }
 }

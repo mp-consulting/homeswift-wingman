@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+- Add **Let bridges operate locks and doors** (Settings › Connection & access, off by default). Turned on, paired bridges may write lock, garage door and alarm targets, so a Homeswift bridge can lock and unlock a door after its user confirms; off, they are refused as before.
 - Tell paired bridges when Apple Home's structure changes: an accessory added or removed, a room or a name changed, or a change of reachability is now a `homes` event in `GET /events`, so a bridge reads the homes again within a couple of seconds instead of at its next periodic refresh. Every event now has a `kind` (`value` or `homes`).
 - Fix bridges on the network failing with "cannot reach Wingman (uncleanShutdown)" right after pairing. Wingman closed each connection as soon as its response was queued, which stalled larger responses such as the homes and dropped them after about 10 seconds; it now ends the response cleanly and waits for the bridge to hang up.
 - Add a clearly labelled demo mode (Settings › Demo, or Try Demo Mode when there is no home) that serves a synthetic home, and a built-in demo bridge that pairs over TLS, switches a light and is refused a lock change, so Wingman can be evaluated without HomeKit devices or a Homeswift bridge.

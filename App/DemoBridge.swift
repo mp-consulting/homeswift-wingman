@@ -70,7 +70,7 @@ final class DemoBridge {
             let (lockStatus, refused) = try await request("POST", "/write", token: token, body: [
                 "accessory": "Demo Front Door Lock", "characteristic": "Lock Mechanism Target State", "value": 0,
             ])
-            note(lockStatus == 200 ? "Unexpectedly unlocked the demo lock." : "Unlock refused: \(refused["error"] as? String ?? "HTTP \(lockStatus)").")
+            note(lockStatus == 200 ? "Unlocked Demo Front Door Lock: Let bridges operate locks and doors is on." : "Unlock refused: \(refused["error"] as? String ?? "HTTP \(lockStatus)").")
         } catch {
             note("Demo bridge could not reach Wingman: \(error.localizedDescription)")
         }

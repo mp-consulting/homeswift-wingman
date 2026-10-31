@@ -20,11 +20,16 @@ func expect(_ condition: Bool, _ message: String) throws {
     var firstSeq = 1
     var reads = 0
     var writes = 0
+    var securityWrites = 0
     func statusJSON() -> [String: Any] { ["fixture": true] }
     func homesJSON() -> [[String: Any]] { [["name": "Demo Home"]] }
     func eventsJSON(since: Int?) -> [[String: Any]] { lastSeq > (since ?? 0) ? [["seq": lastSeq, "value": "private-event"]] : [] }
     func readAll() async -> [String: Any] { reads += 1; return ["read": true] }
-    func write(accessory: String, characteristic: String, value: Any) async -> [String: Any] { writes += 1; return ["written": true] }
+    func write(accessory: String, characteristic: String, value: Any, allowSecurity: Bool) async -> [String: Any] {
+        writes += 1
+        if allowSecurity { securityWrites += 1 }
+        return ["written": true]
+    }
 }
 
 @MainActor final class TestClient {
@@ -107,21 +112,23 @@ func expect(_ condition: Bool, _ message: String) throws {
         try expect(demo.statusJSON()["demo"] as? Bool == true, "status reports demo mode")
         let accessories = home["accessories"] as? [[String: Any]] ?? []
         try expect(accessories.count == 7 && accessories.allSatisfy { ($0["name"] as? String ?? "").hasPrefix("Demo ") }, "every demo accessory is named Demo")
-        let off = await demo.write(accessory: "Demo Floor Lamp", characteristic: "Power State", value: false)
+        let off = await demo.write(accessory: "Demo Floor Lamp", characteristic: "Power State", value: false, allowSecurity: false)
         try expect(off["written"] as? Bool == false && demo.lastSeq == 1 && events == 1 && changes >= 1, "write changes the value and records an event")
         try expect(demo.eventsJSON(since: 0).first?["accessory"] as? String == "Demo Floor Lamp", "event is served after since")
         try expect(demo.panelHomes().description.contains("Lightbulb · Off"), "panel shows the written state")
-        let dim = await demo.write(accessory: "Demo Floor Lamp", characteristic: DemoStore.brightness, value: 250)
+        let dim = await demo.write(accessory: "Demo Floor Lamp", characteristic: DemoStore.brightness, value: 250, allowSecurity: false)
         try expect(dim["written"] as? Int == 100, "brightness is clamped to its range")
-        let lock = await demo.write(accessory: "Demo Front Door Lock", characteristic: "Lock Mechanism Target State", value: 0)
+        let lock = await demo.write(accessory: "Demo Front Door Lock", characteristic: "Lock Mechanism Target State", value: 0, allowSecurity: false)
         try expect((lock["error"] as? String ?? "").contains("security control") && demo.lastSeq == 2, "lock write is refused without an event")
-        let garage = await demo.write(accessory: "Demo Garage Door", characteristic: DemoStore.targetDoorState, value: 0)
+        let garage = await demo.write(accessory: "Demo Garage Door", characteristic: DemoStore.targetDoorState, value: 0, allowSecurity: false)
         try expect((garage["error"] as? String ?? "").contains("security control"), "garage write is refused")
-        let sensor = await demo.write(accessory: "Demo Motion Sensor", characteristic: "Motion Detected", value: true)
+        let unlocked = await demo.write(accessory: "Demo Front Door Lock", characteristic: "Lock Mechanism Target State", value: 0, allowSecurity: true)
+        try expect(unlocked["error"] == nil && demo.lastSeq == 3, "lock write is accepted once security writes are allowed")
+        let sensor = await demo.write(accessory: "Demo Motion Sensor", characteristic: "Motion Detected", value: true, allowSecurity: false)
         try expect((sensor["error"] as? String ?? "").contains("not responding"), "unreachable accessory refuses writes")
-        let wrong = await demo.write(accessory: "Demo Floor Lamp", characteristic: "Power State", value: "on")
+        let wrong = await demo.write(accessory: "Demo Floor Lamp", characteristic: "Power State", value: "on", allowSecurity: false)
         try expect(wrong["error"] != nil, "mistyped value is refused")
-        try expect((await demo.write(accessory: "Nope", characteristic: "Power State", value: true))["error"] as? String == "no accessory Nope", "unknown accessory")
+        try expect((await demo.write(accessory: "Nope", characteristic: "Power State", value: true, allowSecurity: false))["error"] as? String == "no accessory Nope", "unknown accessory")
         let read = await demo.readAll()
         try expect(read["succeeded"] as? Int ?? 0 > 0 && (read["failures"] as? [String: Int])?.values.reduce(0, +) == 1, "read reports the unreachable sensor")
         var enabled = false
@@ -130,8 +137,8 @@ func expect(_ condition: Bool, _ message: String) throws {
         try expect(served.homeIdentifiers == ["fixture-home"], "live homes while demo mode is off")
         enabled = true
         try expect(served.homeIdentifiers == [DemoStore.homeID] && served.lastSeq == demo.lastSeq, "demo home while demo mode is on")
-        _ = await served.write(accessory: "Demo Ceiling Light", characteristic: "Power State", value: true)
-        try expect(live.writes == 0 && demo.lastSeq == 3, "demo writes never reach the live store")
+        _ = await served.write(accessory: "Demo Ceiling Light", characteristic: "Power State", value: true, allowSecurity: false)
+        try expect(live.writes == 0 && demo.lastSeq == 4, "demo writes never reach the live store")
         print("PASS: demo home labelling, writes, events, security refusals and store switching")
     }
 
@@ -182,7 +189,9 @@ func expect(_ condition: Bool, _ message: String) throws {
         guard case let .paired(token, bridge) = pairing.pair(code: pairing.open!.code, name: "Fixture") else { throw TestFailure(message: "fixture pairing") }
         let store = FakeStore()
         var config = LocalServer.Configuration(port: 0, advertise: false)
+        var security = false
         let server = LocalServer(store: store, pairing: pairing, fingerprint: "fixture", configuration: { config }, changesAllowed: { true },
+                                 securityAllowed: { security },
                                  limits: .init(connections: 3, requestSeconds: 0.5, responseSeconds: 2), makeParameters: {
             let parameters = NWParameters.tcp
             parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
@@ -206,6 +215,18 @@ func expect(_ condition: Bool, _ message: String) throws {
         let good = request("/info", authenticated: false)
         try await eventually("still alive after bad waits") { good.ended }
         try expect(good.text.contains("200 OK"), "server still serves")
+        func write() -> TestClient {
+            let body = #"{"accessory":"lock","characteristic":"Lock Mechanism Target State","value":0}"#
+            return TestClient(port: port, request: "POST /write HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \(token)\r\n"
+                + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)")
+        }
+        let guarded = write()
+        try await eventually("write response") { guarded.ended }
+        try expect(store.writes == 1 && store.securityWrites == 0, "security writes are off by default")
+        security = true
+        let allowed = write()
+        try await eventually("security write response") { allowed.ended }
+        try expect(store.writes == 2 && store.securityWrites == 1, "the setting reaches the store")
         let oversized = TestClient(port: port, request: "POST /pair HTTP/1.1\r\nContent-Length: 999999\r\n\r\n")
         try await eventually("oversized request rejected") { oversized.ended }
         try expect(oversized.text.contains("413"), "size rejected before body upload")

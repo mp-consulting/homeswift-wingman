@@ -35,7 +35,8 @@ Builds run from a copy in `~/Library/Caches/HomeswiftWingman/source`; edit the c
   shows it. The scene delegate cannot do this, because no UIWindow exists.
 - Only one copy of the app should be installed. macOS relaunches whichever copy Launch Services prefers (for
   example after a Home permission change), so a stale `/Applications` copy hides fixes in `~/Applications`.
-- Lock, garage door and alarm writes are always refused, in `HomeStore` and `DemoStore`. Keep the two in step.
+- Lock, garage door and alarm writes are refused unless `Settings.allowSecurity` (off by default), in `HomeStore` and
+  `DemoStore`. Keep the two in step.
 - Demo mode (Settings › Demo) serves a synthetic home labelled "Demo" and "(Synthetic)" everywhere. It exists so
   App Review can assess the app without a home or bridge. Keep every demo name, status field and banner clearly marked.
 - The app is "Homeswift Wingman.app" with the executable "Homeswift Wingman" (`PRODUCT_NAME`); the Swift module stays

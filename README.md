@@ -81,7 +81,9 @@ cannot make an `NSStatusItem` itself. The settings live in the app's user defaul
   fingerprint to compare with the menu.
 
 - **What bridges can do:** read the homes and values, and write values unless **Let bridges change accessories** is
-  off. Lock, garage door and alarm targets are refused before HomeKit is asked.
+  off. Lock, garage door and alarm targets are refused before HomeKit is asked unless **Let bridges operate locks and
+  doors** is on too (off by default). Homeswift asks its user to confirm each such change, but Wingman cannot see
+  that confirmation, so the owner of this Mac opts in here.
 
 ## The API
 
@@ -176,7 +178,7 @@ cannot ship this app with HomeKit. The ways out:
   read of it fails. Two Matter lamps switched off at the wall refused with the same `HMErrorDomain 74` in 30–40 ms,
   while HomeKit still listed them as reachable: for Matter devices `reachable` lags, and error 74 on a write means
   the device did not answer. No event came back from the light after the write; HomeKit's value is the one written.
-  Lock, garage door and alarm targets are refused before HomeKit is asked.
+  Lock, garage door and alarm targets are refused before HomeKit is asked, unless bridges may operate locks and doors.
 - **Writing needs a window on screen:** with Catalyst's host window ordered out, every write fails with
   `HMErrorDomain 80` ("Missing entitlement for API") while reads and events go on. Wingman keeps that window on
   screen, transparent and click-through.
@@ -225,10 +227,12 @@ checks device support and returns HomeKit failures. Room assignments are unchang
 Settings › Demo (or **Try Demo Mode** when Wingman has no Home access or no homes) serves a synthetic
 "Demo Home (Synthetic)" instead of HomeKit's homes: seven accessories named "Demo …", one not responding.
 Every tab shows an orange DEMO MODE banner, the status line says so, and `/status` and `/homes` carry `"demo": true`.
-Writes change only these in-memory values; lock, garage door and alarm targets are refused as usual.
+Writes change only these in-memory values; lock, garage door and alarm targets follow the same setting as
+real ones.
 
 In demo mode the Bridges tab adds a **demo bridge** that runs inside Wingman: it pairs with a fresh code over TLS,
-pinning the certificate, reads the home, switches the demo floor lamp and is refused an unlock. Remove it like any
+pinning the certificate, reads the home, switches the demo floor lamp and is refused an unlock (or unlocks the demo lock while
+**Let bridges operate locks and doors** is on). Remove it like any
 bridge to see its token revoked on the next run. Turning demo mode off removes it. Bridges already paired see the
 synthetic home while demo mode is on.
 

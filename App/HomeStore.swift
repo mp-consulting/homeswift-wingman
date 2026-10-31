@@ -185,7 +185,7 @@ final class HomeStore: NSObject, WingmanStore {
 
     // MARK: Writing a value
 
-    /// Locks, garage doors and alarms: never written through this API (Homeswift sends them through its confirmed path).
+    /// Locks, garage doors and alarms: written only while `Settings.allowSecurity` is on.
     static let securityTypes: Set<String> = [
         HMCharacteristicTypeTargetLockMechanismState, HMCharacteristicTypeTargetDoorState,
         HMCharacteristicTypeTargetSecuritySystemState,
@@ -194,7 +194,7 @@ final class HomeStore: NSObject, WingmanStore {
     /// Writes `value` to the characteristic with id `type` (its `id` in `/homes`), else to the first writable
     /// characteristic of `type` (a HAP UUID or HomeKit's description, such as "Power State") on the accessory with id
     /// or exact name `accessory`.
-    func write(accessory: String, characteristic type: String, value: Any) async -> [String: Any] {
+    func write(accessory: String, characteristic type: String, value: Any, allowSecurity: Bool) async -> [String: Any] {
         guard let target = homes.flatMap(\.accessories).first(where: { $0.uniqueIdentifier.uuidString == accessory || $0.name == accessory })
         else { return ["error": "no accessory \(accessory)"] }
         // The native HomeKit action also works when Identify is absent from the service list.
@@ -215,8 +215,8 @@ final class HomeStore: NSObject, WingmanStore {
         guard let characteristic = candidates.first(where: { $0.properties.contains(HMCharacteristicPropertyWritable) }) else {
             return ["error": candidates.isEmpty ? "no characteristic \(type)" : "\(type) is not writable"]
         }
-        if Self.securityTypes.contains(characteristic.characteristicType) {
-            return ["error": "\(characteristic.localizedDescription) is a security control; not written through Wingman"]
+        if !allowSecurity, Self.securityTypes.contains(characteristic.characteristicType) {
+            return ["error": "\(characteristic.localizedDescription) is a security control; turn on Let bridges operate locks and doors in Wingman's settings"]
         }
         let started = Date()
         let error: Error? = await withCheckedContinuation { continuation in

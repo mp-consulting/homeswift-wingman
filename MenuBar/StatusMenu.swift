@@ -339,7 +339,7 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         let keys: [String]
         switch selectedTab {
         case 1: keys = ["pairingCode", "pairingUntil", "serving", "bridges", "fingerprint", "pairingError", "demo", "demoLog", "demoBusy", "demoPaired"]
-        case 2: keys = ["advertise", "allowChanges", "launchAtLogin", "demo", "port", "listening", "settingsError", "automaticUpdateChecks", "updateEnabled", "updateBlocker", "updateStatus", "updateBusy", "updateAvailable", "updateProgress"]
+        case 2: keys = ["advertise", "allowChanges", "allowSecurity", "launchAtLogin", "demo", "port", "listening", "settingsError", "automaticUpdateChecks", "updateEnabled", "updateBlocker", "updateStatus", "updateBusy", "updateAvailable", "updateProgress"]
         default: keys = ["homes", "lastRead", "demo", "offerDemo"]
         }
         let content = model.filter { keys.contains($0.key) }
@@ -557,7 +557,8 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
     private func settings() {
         portCheck?.cancel()
         section("Connection & access")
-        for (key, title) in [("advertise", "Advertise over Bonjour"), ("allowChanges", "Let bridges change accessories"), ("launchAtLogin", "Open at login")] {
+        for (key, title) in [("advertise", "Advertise over Bonjour"), ("allowChanges", "Let bridges change accessories"),
+                             ("allowSecurity", "Let bridges operate locks and doors"), ("launchAtLogin", "Open at login")] {
             let control = NSSwitch()
             control.controlSize = .small
             control.setAccessibilityLabel(title)
@@ -584,7 +585,7 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         portError.isHidden = true
         add(portError)
         _ = checkPort()
-        add(label("Without Bonjour, bridges need this Mac’s address. Disabling changes makes paired bridges read-only. Locks, garage doors and alarms are never changed through Wingman.", small: true))
+        add(label("Without Bonjour, bridges need this Mac’s address. Disabling changes makes paired bridges read-only. Locks, garage doors and alarms are changed only while bridges may operate locks and doors.", small: true))
         if let error = model["settingsError"] as? String { add(label(error, small: true)) }
         section("Demo")
         let demo = NSSwitch()

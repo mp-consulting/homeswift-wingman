@@ -62,7 +62,7 @@ final class MenuBarBridge {
             guard parts.count == 3 else { return }
             let enabled = parts[2] == "1"
             switch parts[1] {
-            case "advertise", "allowChanges":
+            case "advertise", "allowChanges", "allowSecurity":
                 UserDefaults.standard.set(enabled, forKey: String(parts[1]))
                 server?.applySettings()
             case "launchAtLogin": panel.setLaunchAtLogin(enabled)
@@ -94,6 +94,7 @@ final class MenuBarBridge {
             "demo": demoMode,
             "advertise": Settings.advertise,
             "allowChanges": Settings.allowChanges,
+            "allowSecurity": Settings.allowSecurity,
             "launchAtLogin": panel.launchAtLogin,
             "events": demoMode ? demo.eventCount : store.eventCount,
             "serving": server != nil,

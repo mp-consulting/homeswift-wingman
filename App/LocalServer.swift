@@ -11,7 +11,8 @@ protocol WingmanStore: AnyObject {
     func homesJSON() -> [[String: Any]]
     func eventsJSON(since: Int?) -> [[String: Any]]
     func readAll() async -> [String: Any]
-    func write(accessory: String, characteristic: String, value: Any) async -> [String: Any]
+    /// Lock, garage door and alarm targets are refused unless `allowSecurity`.
+    func write(accessory: String, characteristic: String, value: Any, allowSecurity: Bool) async -> [String: Any]
 }
 
 /// A JSON API over TLS on every interface, advertised over Bonjour as `_homeswift-wingman._tcp`, for a Homeswift
@@ -23,7 +24,8 @@ protocol WingmanStore: AnyObject {
 ///   `?since=<seq>&wait=<seconds>` waits up to 30 s for those after `seq`, oldest first, with `last` and `first`, the
 ///   oldest kept: a `since` before `first - 1` missed events),
 ///   `POST /read` (reads every value), `POST /write` (`{"accessory": id or name, "characteristic": its id, HAP UUID or
-///   description, "value": …}`).
+///   description, "value": …}`; lock, garage door and alarm targets only while **Let bridges operate locks and
+///   doors** is on).
 ///
 /// The TXT record carries `v` (the API version), `id` (Wingman's) and `home` (the start of the SHA-256 of the
 /// homes' identifiers), so a bridge that finds two Wingmen for the same home can keep one.
@@ -38,6 +40,7 @@ final class LocalServer {
     private let makeParameters: () -> NWParameters
     private let configuration: () -> Configuration
     private let changesAllowed: () -> Bool
+    private let securityAllowed: () -> Bool
     struct Configuration: Equatable { var port: UInt16; var advertise: Bool }
     struct Limits {
         var connections = 64
@@ -72,7 +75,7 @@ final class LocalServer {
     convenience init(store: any WingmanStore, pairing: Pairing, identity: Identity) {
         self.init(store: store, pairing: pairing, fingerprint: identity.fingerprint,
                   configuration: { Configuration(port: Settings.port, advertise: Settings.advertise) },
-                  changesAllowed: { Settings.allowChanges }, makeParameters: {
+                  changesAllowed: { Settings.allowChanges }, securityAllowed: { Settings.allowSecurity }, makeParameters: {
             let tls = NWProtocolTLS.Options()
             sec_protocol_options_set_local_identity(tls.securityProtocolOptions, sec_identity_create(identity.identity)!)
             sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
@@ -83,12 +86,14 @@ final class LocalServer {
     /// Dependency injection keeps network tests on loopback without HomeKit, defaults or Keychain access.
     init(store: any WingmanStore, pairing: Pairing, fingerprint: String,
          configuration: @escaping () -> Configuration, changesAllowed: @escaping () -> Bool,
+         securityAllowed: @escaping () -> Bool = { false },
          limits: Limits = Limits(), makeParameters: @escaping () -> NWParameters) {
         self.store = store
         self.pairing = pairing
         self.fingerprint = fingerprint
         self.configuration = configuration
         self.changesAllowed = changesAllowed
+        self.securityAllowed = securityAllowed
         self.limits = limits
         self.makeParameters = makeParameters
         port = configuration().port
@@ -312,7 +317,8 @@ final class LocalServer {
             }
             clients[ObjectIdentifier(connection)]?.work = Task {
                 guard !Task.isCancelled, pairing.contains(bridge.id), changesAllowed() else { close(connection); return }
-                let result = await store.write(accessory: accessory, characteristic: characteristic, value: value)
+                let result = await store.write(accessory: accessory, characteristic: characteristic, value: value,
+                                               allowSecurity: securityAllowed())
                 send(result, status: result["error"] == nil ? "200 OK" : "422 Unprocessable Content", on: connection)
             }
         default: send(["error": "not found"], status: "404 Not Found", on: connection)
