@@ -52,7 +52,9 @@ Suggested review description:
 Wingman is a HomeKit companion for a user-owned Homeswift bridge. The user explicitly grants
 Home access and pairs each bridge using a short-lived code. Connections use TLS and bridge
 tokens. Users can revoke a bridge and disable accessory changes. Lock, garage-door and alarm
-writes are blocked unless the user turns on "Let bridges operate locks and doors" (off by default). The app lives in the menu bar and requires Home data for its core function.
+writes are blocked unless the user turns on "Let bridges operate locks and doors" (off by default), and changes to
+the home's rooms, scenes and automations unless the user turns on "Let bridges edit rooms, scenes and automations" (off
+by default). The app lives in the menu bar and requires Home data for its core function.
 
 A reviewer must be able to assess functionality without access to the developer's private home, so Wingman has a
 demo mode (see the README). Suggested App Review notes:

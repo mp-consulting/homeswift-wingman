@@ -6,10 +6,12 @@ enum Settings {
     static let portKey = "port"
     static let allowChangesKey = "allowChanges"
     static let allowSecurityKey = "allowSecurity"
+    static let allowStructureKey = "allowStructure"
     static let demoModeKey = "demoMode"
 
     static func register() {
-        UserDefaults.standard.register(defaults: [advertiseKey: true, portKey: Int(LocalServer.defaultPort), allowChangesKey: true, allowSecurityKey: false, demoModeKey: false])
+        UserDefaults.standard.register(defaults: [advertiseKey: true, portKey: Int(LocalServer.defaultPort), allowChangesKey: true, allowSecurityKey: false,
+                                                  allowStructureKey: false, demoModeKey: false])
     }
 
     /// Serve the synthetic demo home instead of HomeKit's homes, for App Review and evaluation.
@@ -30,4 +32,8 @@ enum Settings {
     /// Also let them write lock, garage door and alarm targets. Off by default: the bridge asks its user to confirm
     /// each one, but Wingman cannot see that, so the owner of this Mac opts in.
     static var allowSecurity: Bool { UserDefaults.standard.bool(forKey: allowSecurityKey) }
+
+    /// Let them rename rooms, move accessories between rooms and edit scenes and automations. Off by default: an edit
+    /// reaches every device of the home through iCloud, and Wingman cannot see the bridge's user confirm it.
+    static var allowStructure: Bool { UserDefaults.standard.bool(forKey: allowStructureKey) }
 }
