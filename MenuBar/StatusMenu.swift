@@ -586,7 +586,7 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         portError.isHidden = true
         add(portError)
         _ = checkPort()
-        add(label("Without Bonjour, bridges need this Mac’s address. Disabling changes stops bridges changing accessories and running scenes. Locks, garage doors and alarms are changed only while bridges may operate locks and doors. Editing rooms, scenes and automations changes your home on every device, and needs you to administer the home.", small: true))
+        add(label("Without Bonjour, bridges need this Mac’s address. Disabling changes stops bridges changing accessories, running scenes and editing the home. Locks, garage doors and alarms are changed only while bridges may operate locks and doors. Editing rooms, scenes and automations changes your home on every device, and needs you to administer the home.", small: true))
         if let error = model["settingsError"] as? String { add(label(error, small: true)) }
         section("Demo")
         let demo = NSSwitch()

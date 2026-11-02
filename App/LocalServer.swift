@@ -35,8 +35,8 @@ protocol WingmanStore: AnyObject {
 ///   description, "value": …}`; lock, garage door and alarm targets only while **Let bridges operate locks and
 ///   doors** is on).
 /// - Apple Home's structure (`/info`'s `"features": ["structure"]`): `GET /scenes`, `GET /automations`, `POST
-///   /scenes/run` (needs **Let bridges change accessories**) and the edits in `StructureEdit.paths` (need **Let bridges
-///   edit rooms, scenes and automations**; `"structure"` in `/info` says whether it is on).
+///   /scenes/run` (needs **Let bridges change accessories**) and the edits in `StructureEdit.paths` (need that and
+///   **Let bridges edit rooms, scenes and automations**; `"structure"` in `/info` says whether both are on).
 ///
 /// The TXT record carries `v` (the API version), `id` (Wingman's) and `home` (the start of the SHA-256 of the
 /// homes' identifiers), so a bridge that finds two Wingmen for the same home can keep one.
@@ -270,7 +270,7 @@ final class LocalServer {
                 "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
                 "fingerprint": fingerprint, "pairing": pairing.open != nil,
                 // Additive, so `api` stays "1": a bridge looks for the feature rather than a version.
-                "features": ["structure"], "structure": structureAllowed(),
+                "features": ["structure"], "structure": structureAllowed() && changesAllowed(),
             ], on: connection)
             return
         case ("POST", "/pair"):
@@ -346,9 +346,10 @@ final class LocalServer {
                 return
             }
             // Checked again once the edit's turn comes, as for writes: the owner may have turned it off meanwhile.
-            let allowed = { edit.isStructural ? self.structureAllowed() : self.changesAllowed() }
+            // An edit changes what scenes and automations write, so a read-only Wingman refuses it too.
+            let allowed = { self.changesAllowed() && (!edit.isStructural || self.structureAllowed()) }
             guard allowed() else {
-                let refusal = edit.isStructural ? StoreAnswer.turnedOff : .forbidden("changes are turned off in Wingman's settings")
+                let refusal = changesAllowed() ? StoreAnswer.turnedOff : .forbidden("changes are turned off in Wingman's settings")
                 send(refusal.body, status: refusal.status, on: connection)
                 return
             }

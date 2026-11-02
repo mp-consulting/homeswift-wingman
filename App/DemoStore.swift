@@ -66,6 +66,7 @@ final class DemoStore: WingmanStore {
     private(set) var scenes: [Scene] = DemoStore.makeScenes()
     private(set) var automations: [Automation] = DemoStore.makeAutomations()
     private var created = 0
+    private var addedRooms = 0
     private(set) var lastSeq = 0
     private(set) var lastEventAt: Date?
     private(set) var lastRefresh: [String: Any]?
@@ -140,13 +141,8 @@ final class DemoStore: WingmanStore {
             return ["accessory": target.name, "characteristic": "Identify", "written": true, "demo": true]
         }
         guard target.reachable else { return ["error": "Demo: \(target.name) is not responding", "demo": true] }
-        let byID = target.characteristics.indices.filter { target.characteristics[$0].id.caseInsensitiveCompare(type) == .orderedSame }
-        let candidates = byID.isEmpty ? target.characteristics.indices.filter {
-            target.characteristics[$0].type.caseInsensitiveCompare(type) == .orderedSame || target.characteristics[$0].description == type
-        } : byID
-        guard let slot = candidates.first(where: { target.characteristics[$0].properties.contains("write") }) else {
-            return ["error": candidates.isEmpty ? "no characteristic \(type)" : "\(type) is not writable"]
-        }
+        let found = Self.writableSlot(of: target, named: type)
+        guard let slot = found.match else { return ["error": found.problem ?? "no characteristic \(type)"] }
         let characteristic = target.characteristics[slot]
         if !allowSecurity, Self.securityTypes.contains(characteristic.type) {
             return ["error": "\(characteristic.description) is a security control; turn on Let bridges operate locks and doors in Wingman's settings"]
@@ -367,6 +363,8 @@ extension DemoStore {
         switch edit {
         case .renameRoom(let id, let name):
             guard let index = rooms.firstIndex(where: { $0.id == id }) else { return .notFound("no room \(id)") }
+            // Accessories keep their room by name: two rooms of one name would be one.
+            if rooms.contains(where: { $0.id != id && sameRoomName($0.name, name) }) { return .refused("\(Self.homeName) already has a room named \(name)") }
             let old = rooms[index].name
             rooms[index].name = name
             for slot in accessories.indices where accessories[slot].room == old { accessories[slot].room = name }
@@ -376,10 +374,12 @@ extension DemoStore {
             guard let index = accessories.firstIndex(where: { $0.id == id }) else { return .notFound("no accessory \(id)") }
             var added = false
             let target: Room
-            if let existing = rooms.first(where: { $0.name.compare(room, options: .caseInsensitive) == .orderedSame }) {
+            if let existing = rooms.first(where: { sameRoomName($0.name, room) }) {
                 target = existing
             } else {
-                target = Room(id: Self.roomID(room), name: room)
+                // Not from the name: a renamed room keeps the id its first name gave it.
+                addedRooms += 1
+                target = Room(id: "demo-room-added-\(addedRooms)", name: room)
                 rooms.append(target)
                 added = true
             }
@@ -400,16 +400,18 @@ extension DemoStore {
 
         case .sceneActions(let id, let actions):
             guard let index = scenes.firstIndex(where: { $0.id == id }) else { return .notFound("no scene \(id)") }
-            if let refusal = check(actions, allowSecurity: allowSecurity) { return refusal }
-            scenes[index].actions = resolved(actions)
+            let (resolved, refusal) = resolve(actions, keeping: scenes[index].actions, allowSecurity: allowSecurity)
+            guard let resolved else { return refusal ?? .badRequest("invalid actions") }
+            scenes[index].actions = resolved
             return .ok(["scene": id, "actions": actions.count, "demo": true])
 
         case .createScene(let home, let name, let actions):
             guard home == Self.homeID else { return .notFound("no home \(home)") }
-            if let refusal = check(actions, allowSecurity: allowSecurity) { return refusal }
+            let (resolved, refusal) = resolve(actions, keeping: [], allowSecurity: allowSecurity)
+            guard let resolved else { return refusal ?? .badRequest("invalid actions") }
             created += 1
             let id = String(format: "D3E0DE00-0000-4000-8000-%012d", 2100 + created)
-            scenes.append(Scene(id: id, name: name, type: "user", actions: resolved(actions)))
+            scenes.append(Scene(id: id, name: name, type: "user", actions: resolved))
             return .ok(["id": id, "name": name, "demo": true])
 
         case .deleteScene(let id):
@@ -448,8 +450,9 @@ extension DemoStore {
 
         case .automationActions(let id, let actions):
             guard let index = automations.firstIndex(where: { $0.id == id }) else { return .notFound("no automation \(id)") }
-            if let refusal = check(actions, allowSecurity: allowSecurity) { return refusal }
-            automations[index].actions = resolved(actions)
+            let (resolved, refusal) = resolve(actions, keeping: automations[index].actions, allowSecurity: allowSecurity)
+            guard let resolved else { return refusal ?? .badRequest("invalid actions") }
+            automations[index].actions = resolved
             return .ok(["automation": id, "actions": actions.count, "demo": true])
 
         case .deleteAutomation(let id):
@@ -462,12 +465,15 @@ extension DemoStore {
     /// The accessory and characteristic slots an action names, as `write` finds them.
     private func locate(_ action: StructureAction) -> (accessory: Int, slot: Int)? {
         guard let index = accessories.firstIndex(where: { $0.id == action.accessory }) else { return nil }
-        let characteristics = accessories[index].characteristics
-        let byID = characteristics.indices.filter { characteristics[$0].id.caseInsensitiveCompare(action.characteristic) == .orderedSame }
-        let candidates = byID.isEmpty ? characteristics.indices.filter {
-            characteristics[$0].type.caseInsensitiveCompare(action.characteristic) == .orderedSame || characteristics[$0].description == action.characteristic
-        } : byID
-        return candidates.first { characteristics[$0].properties.contains("write") }.map { (index, $0) }
+        return Self.writableSlot(of: accessories[index], named: action.characteristic).match.map { (index, $0) }
+    }
+
+    /// The slot of the characteristic `/write` or an action names, as `HomeStore` finds it.
+    fileprivate static func writableSlot(of accessory: Accessory, named name: String) -> (match: Int?, problem: String?) {
+        let all = accessory.characteristics
+        return CharacteristicLookup.writable(
+            Array(all.indices), named: name, id: { all[$0].id }, type: { all[$0].type }, description: { all[$0].description },
+            isWritable: { all[$0].properties.contains("write") })
     }
 
     private func isSecurity(_ action: StructureAction) -> Bool {
@@ -475,33 +481,28 @@ extension DemoStore {
         return Self.securityTypes.contains(accessories[index].characteristics[slot].type)
     }
 
-    /// Every action checked before anything changes, as `HomeStore.resolve` does.
-    private func check(_ actions: [StructureAction], allowSecurity: Bool) -> StoreAnswer? {
+    /// Every action checked before anything changes, as `HomeStore.resolve` does, and kept by characteristic id with
+    /// its value in the characteristic's format. A security action the set already has, unchanged, needs no setting.
+    private func resolve(_ actions: [StructureAction], keeping existing: [StructureAction], allowSecurity: Bool) -> ([StructureAction]?, StoreAnswer?) {
+        var resolved: [StructureAction] = []
         var seen: Set<String> = []
         for action in actions {
             guard let accessory = accessories.first(where: { $0.id == action.accessory }) else {
-                return .badRequest("no accessory \(action.accessory) in \(Self.homeName)")
+                return (nil, .badRequest("no accessory \(action.accessory) in \(Self.homeName)"))
             }
-            guard let (index, slot) = locate(action) else { return .badRequest("\(accessory.name) cannot set \(action.characteristic)") }
+            guard let (index, slot) = locate(action) else { return (nil, .badRequest("\(accessory.name) cannot set \(action.characteristic)")) }
             let characteristic = accessories[index].characteristics[slot]
-            guard seen.insert(characteristic.id).inserted else { return .badRequest("\(accessory.name)'s \(characteristic.description) is set twice") }
-            if !allowSecurity, Self.securityTypes.contains(characteristic.type) { return .security(accessory.name) }
-            guard StructureValue.coerce(action.value, format: characteristic.format, minimum: characteristic.minimum, maximum: characteristic.maximum) != nil else {
-                return .badRequest("\(accessory.name)'s \(characteristic.description) does not take \(action.value)")
+            guard seen.insert(characteristic.id).inserted else { return (nil, .badRequest("\(accessory.name)'s \(characteristic.description) is set twice")) }
+            guard let value = StructureValue.coerce(action.value, format: characteristic.format, minimum: characteristic.minimum, maximum: characteristic.maximum) else {
+                return (nil, .badRequest("\(accessory.name)'s \(characteristic.description) does not take \(action.value)"))
             }
+            if !allowSecurity, Self.securityTypes.contains(characteristic.type),
+               !existing.contains(where: { $0.characteristic == characteristic.id && StructureValue.same($0.value as? NSNumber, value as? NSNumber) }) {
+                return (nil, .security(accessory.name))
+            }
+            resolved.append(StructureAction(accessory: accessory.id, characteristic: characteristic.id, value: value))
         }
-        return nil
-    }
-
-    /// Checked actions as kept: by characteristic id, with the value in its format.
-    private func resolved(_ actions: [StructureAction]) -> [StructureAction] {
-        actions.compactMap { action in
-            guard let (index, slot) = locate(action) else { return nil }
-            let characteristic = accessories[index].characteristics[slot]
-            guard let value = StructureValue.coerce(action.value, format: characteristic.format, minimum: characteristic.minimum, maximum: characteristic.maximum)
-            else { return nil }
-            return StructureAction(accessory: accessories[index].id, characteristic: characteristic.id, value: value)
-        }
+        return (resolved, nil)
     }
 
     /// A scene's write, as a bridge's would be: the value and its event.

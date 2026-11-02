@@ -215,14 +215,8 @@ final class HomeStore: NSObject, WingmanStore {
             if let error { return ["error": Self.describe(error)] }
             return ["accessory": target.name, "characteristic": "Identify", "written": true]
         }
-        let all = target.services.flatMap(\.characteristics)
-        let byID = all.filter { $0.uniqueIdentifier.uuidString.caseInsensitiveCompare(type) == .orderedSame }
-        let candidates = byID.isEmpty ? all.filter {
-            $0.characteristicType.caseInsensitiveCompare(type) == .orderedSame || $0.localizedDescription == type
-        } : byID
-        guard let characteristic = candidates.first(where: { $0.properties.contains(HMCharacteristicPropertyWritable) }) else {
-            return ["error": candidates.isEmpty ? "no characteristic \(type)" : "\(type) is not writable"]
-        }
+        let found = Self.writableCharacteristic(of: target, named: type)
+        guard let characteristic = found.match else { return ["error": found.problem ?? "no characteristic \(type)"] }
         if !allowSecurity, Self.securityTypes.contains(characteristic.characteristicType) {
             return ["error": "\(characteristic.localizedDescription) is a security control; turn on Let bridges operate locks and doors in Wingman's settings"]
         }
@@ -239,6 +233,12 @@ final class HomeStore: NSObject, WingmanStore {
         if let error { result["error"] = Self.describe(error) } else { result["written"] = Self.jsonValue(value) }
         if let current = characteristic.value { result["value"] = Self.jsonValue(current) }
         return result
+    }
+
+    static func writableCharacteristic(of accessory: HMAccessory, named name: String) -> (match: HMCharacteristic?, problem: String?) {
+        CharacteristicLookup.writable(
+            accessory.services.flatMap(\.characteristics), named: name, id: \.uniqueIdentifier.uuidString, type: \.characteristicType,
+            description: \.localizedDescription, isWritable: { $0.properties.contains(HMCharacteristicPropertyWritable) })
     }
 
     // MARK: JSON

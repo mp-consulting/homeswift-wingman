@@ -85,7 +85,8 @@ cannot make an `NSStatusItem` itself. The settings live in the app's user defaul
   doors** is on too (off by default). Homeswift asks its user to confirm each such change, but Wingman cannot see
   that confirmation, so the owner of this Mac opts in here. Renaming rooms, moving accessories between rooms and
   editing scenes and automations needs **Let bridges edit rooms, scenes and automations** (off by default) for the same
-  reason, and an edit reaches every device of the home through iCloud. Running a scene needs only **Let bridges change
+  reason, and **Let bridges change accessories** too, since an edit changes what scenes and automations write; an edit
+  reaches every device of the home through iCloud. Running a scene needs only **Let bridges change
   accessories**, and a scene that operates a lock, garage door or alarm runs only while bridges may operate them.
 
 ## The API
@@ -118,7 +119,7 @@ the characteristic's `id`.
 ## Rooms, scenes and automations
 
 `GET /info` lists `"features": ["structure"]` and `"structure": true|false` (whether **Let bridges edit rooms, scenes
-and automations** is on): additive, so `api` stays `1` and an older bridge ignores it. Each home in `/homes` has its
+and automations** and **Let bridges change accessories** are both on): additive, so `api` stays `1` and an older bridge ignores it. Each home in `/homes` has its
 `id`, its `rooms` (`[{"id", "name", "accessories"}]`) and `editable` (whether this Mac's user administers it: HomeKit
 refuses structural edits otherwise). Ids are HomeKit's `uniqueIdentifier`s.
 
@@ -145,8 +146,9 @@ curl -sk -H "$H" https://127.0.0.1:8619/rooms/rename -d '{"room": "<id>", "name"
 | `POST /automations/delete` | `{"automation"}` | Removes it |
 
 Errors are `{"error": "…"}` with `400` (a bad body, or an action naming an accessory the home lacks, a characteristic
-it cannot set, a value outside its format or range, or one characteristic twice), `403` (the setting is off, the user
-does not administer the home, or a lock, garage door or alarm without **Let bridges operate locks and doors**), `404`
+it cannot set, a value outside its format or range, or one characteristic twice), `403` (a setting is off, the user
+does not administer the home, or a lock, garage door or alarm without **Let bridges operate locks and doors**, unless
+the action is one the scene already has, sent back unchanged), `404`
 (no such room, scene, automation or home) or `422` (HomeKit refused, with its `HMErrorDomain` code; `done` counts the
 changes made before it: HomeKit has no transaction). Every action is checked before anything changes.
 
@@ -166,6 +168,8 @@ changes made before it: HomeKit has no transaction). Every action is checked bef
 - **Times:** a timer takes a clock time, every day or on one weekday; an event trigger takes a clock time or a sunrise
   or sunset with an offset, on any weekdays. An automation started by accessories or presence keeps its events: the
   Home app edits those, its end events and its conditions.
+- **Values:** as `/write` takes them, checked against the characteristic's format and range; `data` and `tlv8`
+  values are base64, as `/scenes` lists them. Room names match without case or accents.
 - **Own actions:** HomeKit's API cannot give an automation actions of its own; `/automations/actions` changes those it
   has, and refuses to add some to one that has none.
 - **Events:** `scenes` and `automations` events say those changed (in the Home app or through Wingman), `homes`

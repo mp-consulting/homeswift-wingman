@@ -151,7 +151,6 @@ func expect(_ condition: Bool, _ message: String) throws {
         try expect(try parse("accessories/room", #"{"accessory": "a", "room": "b"}"#).eventKind == "homes", "room edits make homes events")
         try expect(refused("rooms/rename", "[]") == "expected a JSON object", "a body that is not an object")
         try expect(refused("rooms/rename", #"{"room": "r", "name": "   "}"#) != nil, "an empty name")
-        try expect(refused("rooms/rename", #"{"room": "r", "name": "\#(String(repeating: "x", count: 65))"}"#) != nil, "a name HomeKit would not take")
         try expect(refused("scenes/actions", #"{"scene": "s", "actions": [{"accessory": "a", "value": 1}]}"#) != nil, "an action without its characteristic")
         try expect(refused("scenes/actions", #"{"scene": "s", "actions": [{"accessory": "a", "characteristic": "c", "value": null}]}"#) != nil, "an action without a value")
         try expect(refused("automations/enable", #"{"automation": "a", "enabled": 1}"#) != nil, "enabled is a boolean")
@@ -171,6 +170,10 @@ func expect(_ condition: Bool, _ message: String) throws {
         try expect(StructureValue.coerce(true, format: "int", minimum: nil, maximum: nil) == nil, "a bool is not a number")
         try expect(StructureValue.coerce(21.5, format: "float", minimum: 10, maximum: 38) as? Double == 21.5, "a float")
         try expect(StructureValue.coerce("on", format: "float", minimum: nil, maximum: nil) == nil, "a string is not a float")
+        try expect(StructureValue.coerce("AQI=", format: "tlv8", minimum: nil, maximum: nil) as? Data == Data([1, 2]), "TLV8 from base64, as /scenes lists it")
+        try expect(StructureValue.coerce("not base64", format: "data", minimum: nil, maximum: nil) == nil, "data is base64")
+        try expect(StructureValue.same(Data([1]), Data([1])) && !StructureValue.same(Data([1]), "AQ=="), "data compares as data")
+        try expect(sameRoomName("Entrée", "entree") && !sameRoomName("Entrée", "Entry"), "room names compare without case or accents")
         print("PASS: structure request bodies, times and action values")
     }
 
@@ -240,6 +243,10 @@ func expect(_ condition: Bool, _ message: String) throws {
         let garage = try await edit("accessories/room", #"{"accessory": "\#(lamp)", "room": "Garage"}"#)
         try expect(garage.body["added"] as? Bool == true && demo.rooms.contains { $0.name == "Garage" }, "a room the home lacks is added")
         try expect(try await edit("accessories/room", #"{"accessory": "nope", "room": "Garage"}"#).status.hasPrefix("404"), "no such accessory")
+        try expect(try await edit("rooms/rename", #"{"room": "\#(living)", "name": "kitchen"}"#).status.hasPrefix("422"), "no two rooms of one name")
+        let readded = try await edit("accessories/room", #"{"accessory": "\#(lamp)", "room": "Living Room"}"#)
+        try expect(readded.body["added"] as? Bool == true && readded.body["roomID"] as? String != living && Set(demo.rooms.map(\.id)).count == demo.rooms.count,
+                   "a room added under a renamed room's first name gets its own id")
         try expect(try await edit("rooms/rename", #"{"room": "nope", "name": "X"}"#).status.hasPrefix("404"), "no such room")
 
         // Scenes, in the shape the plugin decodes
@@ -255,6 +262,12 @@ func expect(_ condition: Bool, _ message: String) throws {
         let leave = try await edit("scenes/run", #"{"scene": "\#(DemoStore.sceneLeave)"}"#)
         try expect(leave.status.hasPrefix("403") && (leave.body["error"] as? String ?? "").contains("locks and doors"), "a scene that locks a door needs the security setting")
         try expect(try await edit("scenes/run", #"{"scene": "\#(DemoStore.sceneLeave)"}"#, security: true).status.hasPrefix("200"), "and runs with it")
+        // "Keep the lights as they are" sends the scene's lock action back unchanged: no security setting needed for that.
+        let lock = "D3E0DE00-0000-4000-8000-000000000106"
+        let keptLock = try await edit("scenes/actions", #"{"scene": "\#(DemoStore.sceneLeave)", "actions": [{"accessory": "\#(lamp)", "characteristic": "\#(lampPower)", "value": true}, {"accessory": "\#(lock)", "characteristic": "\#(lockTarget)", "value": 1}]}"#)
+        try expect(keptLock.status.hasPrefix("200"), "an unchanged lock action is kept without the security setting")
+        let changedLock = try await edit("scenes/actions", #"{"scene": "\#(DemoStore.sceneLeave)", "actions": [{"accessory": "\#(lock)", "characteristic": "\#(lockTarget)", "value": 0}]}"#)
+        try expect(changedLock.status.hasPrefix("403"), "a changed one needs it")
         try expect(try await edit("scenes/rename", #"{"scene": "\#(DemoStore.sceneEvening)", "name": "Demo Dusk (Synthetic)"}"#).status.hasPrefix("200"), "scene renamed")
         try expect(try await edit("scenes/rename", #"{"scene": "\#(DemoStore.sceneNight)", "name": "X"}"#).status.hasPrefix("422"), "a built-in scene keeps its name")
         try expect(try await edit("scenes/delete", #"{"scene": "\#(DemoStore.sceneNight)"}"#).status.hasPrefix("422"), "and is not deleted")
@@ -360,7 +373,8 @@ func expect(_ condition: Bool, _ message: String) throws {
 
     /// `/info` says Wingman serves the structure and whether edits are on; the reads always answer, edits only while
     /// the owner allows them, and the server refuses a bad body before the store sees it.
-    @MainActor static func structureRoutes(port: UInt16, token: String, store: FakeStore, allow: (Bool) -> Void) async throws {
+    @MainActor static func structureRoutes(port: UInt16, token: String, store: FakeStore, allow: (Bool) -> Void,
+                                           allowChanges: (Bool) -> Void) async throws {
         func request(_ method: String, _ path: String, _ body: String = "") async throws -> (status: String, json: [String: Any]) {
             let client = TestClient(port: port, request: "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \(token)\r\n"
                 + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)")
@@ -392,6 +406,13 @@ func expect(_ condition: Bool, _ message: String) throws {
         try expect(bad.status.contains("400") && store.edits.count == 2, "a bad body is refused before the store")
         let unknown = try await request("POST", "/scenes/explode", "{}")
         try expect(unknown.status.contains("404"), "an unknown path")
+        // Read-only: an edit would change what scenes and automations write, so it is refused too.
+        allowChanges(false)
+        let readOnly = try await request("POST", "/rooms/rename", #"{"room": "room-1", "name": "Séjour"}"#)
+        try expect(readOnly.status.contains("403") && readOnly.json["error"] as? String == "changes are turned off in Wingman's settings" && store.edits.count == 2,
+                   "a read-only Wingman refuses edits")
+        try expect(try await request("GET", "/info").json["structure"] as? Bool == false, "info says edits are off while changes are")
+        allowChanges(true)
         allow(false)
         print("PASS: structure routes, the owner's setting and request validation over loopback")
     }
@@ -406,7 +427,8 @@ func expect(_ condition: Bool, _ message: String) throws {
         var config = LocalServer.Configuration(port: 0, advertise: false)
         var security = false
         var structure = false
-        let server = LocalServer(store: store, pairing: pairing, fingerprint: "fixture", configuration: { config }, changesAllowed: { true },
+        var changes = true
+        let server = LocalServer(store: store, pairing: pairing, fingerprint: "fixture", configuration: { config }, changesAllowed: { changes },
                                  securityAllowed: { security }, structureAllowed: { structure },
                                  limits: .init(connections: 3, requestSeconds: 0.5, responseSeconds: 2), makeParameters: {
             let parameters = NWParameters.tcp
@@ -444,7 +466,7 @@ func expect(_ condition: Bool, _ message: String) throws {
         try await eventually("security write response") { allowed.ended }
         try expect(store.writes == 2 && store.securityWrites == 1, "the setting reaches the store")
         security = false
-        try await structureRoutes(port: port, token: token, store: store) { structure = $0 }
+        try await structureRoutes(port: port, token: token, store: store, allow: { structure = $0 }, allowChanges: { changes = $0 })
         let oversized = TestClient(port: port, request: "POST /pair HTTP/1.1\r\nContent-Length: 999999\r\n\r\n")
         try await eventually("oversized request rejected") { oversized.ended }
         try expect(oversized.text.contains("413"), "size rejected before body upload")

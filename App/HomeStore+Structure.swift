@@ -12,15 +12,17 @@ extension HomeStore {
     // MARK: Scenes
 
     func scenesJSON() -> [[String: Any]] {
-        homes.flatMap { home in
+        let formatter = ISO8601DateFormatter()
+        return homes.flatMap { home in
             home.actionSets.filter { $0.actionSetType != HMActionSetTypeTriggerOwned }.map { set in
                 let type = Self.sceneType(set.actionSetType)
+                let writes = Self.writeActions(set)
                 var json: [String: Any] = [
                     "id": set.uniqueIdentifier.uuidString, "home": home.uniqueIdentifier.uuidString, "name": set.name,
                     "type": type, "builtIn": type != "user", "executing": set.isExecuting,
-                    "actions": Self.writeActions(set).map(Self.actionJSON), "unsupported": Self.unsupported(set),
+                    "actions": writes.map(Self.actionJSON), "unsupported": set.actions.count - writes.count,
                 ]
-                if let date = set.lastExecutionDate { json["lastExecuted"] = ISO8601DateFormatter().string(from: date) }
+                if let date = set.lastExecutionDate { json["lastExecuted"] = formatter.string(from: date) }
                 return json
             }
         }
@@ -45,11 +47,6 @@ extension HomeStore {
         }
     }
 
-    /// Shortcut and media actions have no public API: they are counted, and a list of actions never replaces them.
-    private static func unsupported(_ set: HMActionSet) -> Int {
-        set.actions.count - writeActions(set).count
-    }
-
     private static func actionJSON(_ action: HMCharacteristicWriteAction<NSCopying>) -> [String: Any] {
         var json = characteristicReference(action.characteristic)
         json["value"] = jsonValue(action.targetValue)
@@ -72,12 +69,14 @@ extension HomeStore {
 
     private func automationJSON(_ trigger: HMTrigger, in home: HMHome) -> [String: Any] {
         let own = trigger.actionSets.filter { $0.actionSetType == HMActionSetTypeTriggerOwned }
+        let writes = own.flatMap(Self.writeActions)
         var json: [String: Any] = [
             "id": trigger.uniqueIdentifier.uuidString, "home": home.uniqueIdentifier.uuidString, "name": trigger.name,
             "enabled": trigger.isEnabled,
             "scenes": trigger.actionSets.filter { $0.actionSetType != HMActionSetTypeTriggerOwned }.map(\.uniqueIdentifier.uuidString),
-            "actions": own.flatMap(Self.writeActions).map(Self.actionJSON),
-            "unsupported": own.reduce(0) { $0 + Self.unsupported($1) },
+            "actions": writes.map(Self.actionJSON),
+            // Shortcut and media actions have no public API: counted, and a list of actions never replaces them.
+            "unsupported": own.reduce(0) { $0 + $1.actions.count } - writes.count,
         ]
         switch trigger {
         case let timer as HMTimerTrigger:
@@ -273,7 +272,7 @@ extension HomeStore {
             guard isAdministrator(home) else { return .notAdministrator }
             var added = false
             let target: HMRoom
-            if let existing = home.rooms.first(where: { $0.name.compare(roomName, options: .caseInsensitive) == .orderedSame }) {
+            if let existing = home.rooms.first(where: { sameRoomName($0.name, roomName) }) {
                 target = existing
             } else {
                 let (room, error) = await Self.addRoom(roomName, to: home)
@@ -306,7 +305,7 @@ extension HomeStore {
             guard let (home, set) = scene(id) else { return .notFound("no scene \(id)") }
             guard isAdministrator(home) else { return .notAdministrator }
             let wanted: [(HMCharacteristic, NSCopying)]
-            switch resolve(actions, in: home, allowSecurity: allowSecurity) {
+            switch resolve(actions, in: home, keeping: set, allowSecurity: allowSecurity) {
             case .actions(let resolved): wanted = resolved
             case .refused(let refusal): return refusal
             }
@@ -317,7 +316,7 @@ extension HomeStore {
             guard let home = homes.first(where: { $0.uniqueIdentifier.uuidString == homeID }) else { return .notFound("no home \(homeID)") }
             guard isAdministrator(home) else { return .notAdministrator }
             let wanted: [(HMCharacteristic, NSCopying)]
-            switch resolve(actions, in: home, allowSecurity: allowSecurity) {
+            switch resolve(actions, in: home, keeping: nil, allowSecurity: allowSecurity) {
             case .actions(let resolved): wanted = resolved
             case .refused(let refusal): return refusal
             }
@@ -388,11 +387,12 @@ extension HomeStore {
             guard let (home, trigger) = trigger(id) else { return .notFound("no automation \(id)") }
             guard isAdministrator(home) else { return .notAdministrator }
             let wanted: [(HMCharacteristic, NSCopying)]
-            switch resolve(actions, in: home, allowSecurity: allowSecurity) {
+            let own = trigger.actionSets.first { $0.actionSetType == HMActionSetTypeTriggerOwned }
+            switch resolve(actions, in: home, keeping: own, allowSecurity: allowSecurity) {
             case .actions(let resolved): wanted = resolved
             case .refused(let refusal): return refusal
             }
-            guard let own = trigger.actionSets.first(where: { $0.actionSetType == HMActionSetTypeTriggerOwned }) else {
+            guard let own else {
                 // HomeKit's API makes no action set of that type: only the Home app gives an automation its own actions.
                 if wanted.isEmpty { return .ok(["automation": id, "actions": 0]) }
                 return .refused("\(trigger.name) has no actions of its own in HomeKit: give it one in the Home app first, or run a scene")
@@ -434,32 +434,32 @@ extension HomeStore {
     }
 
     /// Every action checked before anything changes: the accessory in this home, a writable characteristic, a value
-    /// of its format within its range, and no lock, garage door or alarm unless `allowSecurity`.
-    private func resolve(_ actions: [StructureAction], in home: HMHome, allowSecurity: Bool) -> Resolved {
+    /// of its format within its range, and no lock, garage door or alarm unless `allowSecurity` or the set already writes
+    /// that value there (a bridge sends a scene's other actions back as they are).
+    private func resolve(_ actions: [StructureAction], in home: HMHome, keeping existing: HMActionSet?, allowSecurity: Bool) -> Resolved {
+        let kept = existing.map(Self.writeActions) ?? []
         var resolved: [(HMCharacteristic, NSCopying)] = []
         var seen: Set<UUID> = []
         for action in actions {
             guard let accessory = home.accessories.first(where: { $0.uniqueIdentifier.uuidString == action.accessory }) else {
                 return .refused(.badRequest("no accessory \(action.accessory) in \(home.name)"))
             }
-            let all = accessory.services.flatMap(\.characteristics)
-            let byID = all.filter { $0.uniqueIdentifier.uuidString.caseInsensitiveCompare(action.characteristic) == .orderedSame }
-            let candidates = byID.isEmpty ? all.filter {
-                $0.characteristicType.caseInsensitiveCompare(action.characteristic) == .orderedSame || $0.localizedDescription == action.characteristic
-            } : byID
-            guard let characteristic = candidates.first(where: { $0.properties.contains(HMCharacteristicPropertyWritable) }) else {
-                let problem = candidates.isEmpty ? "has no characteristic \(action.characteristic)" : "cannot set \(action.characteristic)"
-                return .refused(.badRequest("\(accessory.name) \(problem)"))
+            let found = Self.writableCharacteristic(of: accessory, named: action.characteristic)
+            guard let characteristic = found.match else {
+                return .refused(.badRequest("\(accessory.name): \(found.problem ?? "no characteristic \(action.characteristic)")"))
             }
             guard seen.insert(characteristic.uniqueIdentifier).inserted else {
                 return .refused(.badRequest("\(accessory.name)'s \(characteristic.localizedDescription) is set twice"))
             }
-            if !allowSecurity, Self.securityTypes.contains(characteristic.characteristicType) { return .refused(.security(accessory.name)) }
             let metadata = characteristic.metadata
             guard let value = StructureValue.coerce(
                 action.value, format: metadata?.format, minimum: metadata?.minimumValue?.doubleValue, maximum: metadata?.maximumValue?.doubleValue,
                 validValues: metadata?.validValues?.map(\.intValue)), let object = Self.object(value) else {
                 return .refused(.badRequest("\(accessory.name)'s \(characteristic.localizedDescription) does not take \(action.value)"))
+            }
+            if !allowSecurity, Self.securityTypes.contains(characteristic.characteristicType),
+               !kept.contains(where: { $0.characteristic == characteristic && StructureValue.same($0.targetValue, object) }) {
+                return .refused(.security(accessory.name))
             }
             resolved.append((characteristic, object))
         }
@@ -472,6 +472,7 @@ extension HomeStore {
         case let int as Int: NSNumber(value: int)
         case let double as Double: NSNumber(value: double)
         case let string as String: string as NSString
+        case let data as Data: data as NSData
         case let number as NSNumber: number
         default: nil
         }

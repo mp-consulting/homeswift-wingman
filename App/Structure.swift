@@ -151,7 +151,6 @@ enum StructureEdit {
         func name(_ key: String = "name") throws(StructureRequestError) -> String {
             let value = (json[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !value.isEmpty else { throw StructureRequestError(#"expected "\#(key)", a name"#) }
-            guard value.count <= 64 else { throw StructureRequestError("\(key) is 64 characters at most") }
             return value
         }
         switch path {
@@ -195,11 +194,29 @@ enum StructureEdit {
     }
 }
 
+/// How `/write` and actions name a characteristic: by its id, else by its HAP UUID or HomeKit's description. The
+/// first writable match wins; `problem` says why there is none.
+enum CharacteristicLookup {
+    static func writable<C>(_ all: [C], named name: String, id: (C) -> String, type: (C) -> String, description: (C) -> String,
+                            isWritable: (C) -> Bool) -> (match: C?, problem: String?) {
+        let byID = all.filter { id($0).caseInsensitiveCompare(name) == .orderedSame }
+        let candidates = byID.isEmpty ? all.filter { type($0).caseInsensitiveCompare(name) == .orderedSame || description($0) == name } : byID
+        if let match = candidates.first(where: isWritable) { return (match, nil) }
+        return (nil, candidates.isEmpty ? "no characteristic \(name)" : "\(name) is not writable")
+    }
+}
+
+/// Room names as HomeKit compares them: "Entrée" is "entree".
+func sameRoomName(_ a: String, _ b: String) -> Bool {
+    a.compare(b, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+}
+
 /// Checks a value an action would write against the characteristic's format and range, as HomeKit would.
 enum StructureValue {
     static func isBool(_ number: NSNumber) -> Bool { CFGetTypeID(number) == CFBooleanGetTypeID() }
 
-    /// The value as the characteristic takes it (Bool, Int, Double or String), or nil when it does not fit.
+    /// The value as the characteristic takes it (Bool, Int, Double, String, or Data from base64 as `/scenes` lists it),
+    /// or nil when it does not fit.
     static func coerce(_ value: Any, format: String?, minimum: Double?, maximum: Double?, validValues: [Int]? = nil) -> Any? {
         let number = value as? NSNumber
         func inRange(_ double: Double) -> Bool {
@@ -219,6 +236,8 @@ enum StructureValue {
             return number.doubleValue
         case "string":
             return value as? String
+        case "data", "tlv8":
+            return (value as? String).flatMap { Data(base64Encoded: $0) }
         default:
             if let number { return isBool(number) ? number.boolValue : number }
             return value as? String
@@ -230,6 +249,7 @@ enum StructureValue {
         switch (a, b) {
         case (let a as NSNumber, let b as NSNumber): a == b
         case (let a as String, let b as String): a == b
+        case (let a as Data, let b as Data): a == b
         case (nil, nil): true
         default: false
         }
