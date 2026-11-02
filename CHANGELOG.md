@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
 - Serve Apple Home's rooms, scenes and automations to paired bridges, so Homeswift can show and edit them: `GET /scenes` and `GET /automations` list them with their actions, triggers and conditions; bridges can run scenes, and, with the new **Let bridges edit rooms, scenes and automations** (Settings › Connection & access, off by default), rename rooms, move accessories between rooms, rename, change, create and delete scenes, and turn on or off, rename, retime, change and delete automations. `/info` lists the `structure` feature, each home in `/homes` says whether this Mac's user may edit it, and `scenes`, `automations` and `settings` events tell bridges of changes. Demo mode has scenes and automations to try them on.
 - Add **Let bridges operate locks and doors** (Settings › Connection & access, off by default). Turned on, paired bridges may write lock, garage door and alarm targets, so a Homeswift bridge can lock and unlock a door after its user confirms; off, they are refused as before.
 - Tell paired bridges when Apple Home's structure changes: an accessory added or removed, a room or a name changed, or a change of reachability is now a `homes` event in `GET /events`, so a bridge reads the homes again within a couple of seconds instead of at its next periodic refresh. Every event now has a `kind` (`value` or `homes`).
