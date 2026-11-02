@@ -83,7 +83,10 @@ cannot make an `NSStatusItem` itself. The settings live in the app's user defaul
 - **What bridges can do:** read the homes and values, and write values unless **Let bridges change accessories** is
   off. Lock, garage door and alarm targets are refused before HomeKit is asked unless **Let bridges operate locks and
   doors** is on too (off by default). Homeswift asks its user to confirm each such change, but Wingman cannot see
-  that confirmation, so the owner of this Mac opts in here.
+  that confirmation, so the owner of this Mac opts in here. Renaming rooms, moving accessories between rooms and
+  editing scenes and automations needs **Let bridges edit rooms, scenes and automations** (off by default) for the same
+  reason, and an edit reaches every device of the home through iCloud. Running a scene needs only **Let bridges change
+  accessories**, and a scene that operates a lock, garage door or alarm runs only while bridges may operate them.
 
 ## The API
 
@@ -111,6 +114,63 @@ service and characteristic an `id` (HomeKit's `uniqueIdentifier`), HomeKit's ran
 `/homes` again), whose `last` says when Wingman restarted (lower than `since`) and whose `first` is the oldest event
 kept (500 at most: a `since` before `first - 1` missed some, and the plugin reads `/homes` again); `POST /write` takes
 the characteristic's `id`.
+
+## Rooms, scenes and automations
+
+`GET /info` lists `"features": ["structure"]` and `"structure": true|false` (whether **Let bridges edit rooms, scenes
+and automations** is on): additive, so `api` stays `1` and an older bridge ignores it. Each home in `/homes` has its
+`id`, its `rooms` (`[{"id", "name", "accessories"}]`) and `editable` (whether this Mac's user administers it: HomeKit
+refuses structural edits otherwise). Ids are HomeKit's `uniqueIdentifier`s.
+
+```sh
+curl -sk -H "$H" https://127.0.0.1:8619/scenes        # every home's scenes (action sets) and their actions
+curl -sk -H "$H" https://127.0.0.1:8619/automations   # every home's automations (triggers)
+curl -sk -H "$H" https://127.0.0.1:8619/rooms/rename -d '{"room": "<id>", "name": "Lounge"}'
+```
+
+| Method and path | Body | Does |
+|---|---|---|
+| `POST /rooms/rename` | `{"room", "name"}` | Renames the room |
+| `POST /accessories/room` | `{"accessory", "room": name}` | Moves the accessory to its home's room of that name (case aside), added when there is none |
+| `POST /scenes/run` | `{"scene"}` | Runs the scene (needs **Let bridges change accessories** only) |
+| `POST /scenes/rename` | `{"scene", "name"}` | Renames a scene; built-in ones keep their names |
+| `POST /scenes/actions` | `{"scene", "actions": [{"accessory", "characteristic", "value"}]}` | Makes the scene write exactly these characteristics: others removed, kept ones updated, new ones added |
+| `POST /scenes/create` | `{"home", "name", "actions"}` | Adds a scene; answers `{"id"}` |
+| `POST /scenes/delete` | `{"scene"}` | Removes a scene; built-in ones stay |
+| `POST /automations/enable` | `{"automation", "enabled"}` | Turns it on or off |
+| `POST /automations/rename` | `{"automation", "name"}` | Renames it |
+| `POST /automations/time` | `{"automation", "time"}` | A new time for one that starts at a time |
+| `POST /automations/scenes` | `{"automation", "scenes": [ids]}` | Makes it run exactly these scenes |
+| `POST /automations/actions` | `{"automation", "actions"}` | As `/scenes/actions`, on its own actions |
+| `POST /automations/delete` | `{"automation"}` | Removes it |
+
+Errors are `{"error": "…"}` with `400` (a bad body, or an action naming an accessory the home lacks, a characteristic
+it cannot set, a value outside its format or range, or one characteristic twice), `403` (the setting is off, the user
+does not administer the home, or a lock, garage door or alarm without **Let bridges operate locks and doors**), `404`
+(no such room, scene, automation or home) or `422` (HomeKit refused, with its `HMErrorDomain` code; `done` counts the
+changes made before it: HomeKit has no transaction). Every action is checked before anything changes.
+
+- **Scenes:** `{"id", "home", "name", "type", "builtIn", "executing", "actions", "unsupported"}`. `type` is `user`,
+  `wakeUp`, `sleep`, `homeArrival` or `homeDeparture`; the four built-in ones can be run and their actions changed, not
+  renamed or deleted. Each action is `{"accessory", "characteristic", "type", "value"}`. `unsupported` counts actions
+  Wingman cannot show (shortcuts, media): they are never replaced. An automation's own actions are listed with it, not here.
+- **Automations:** `{"id", "home", "name", "enabled", "trigger", "endEvents", "conditions", "executeOnce", "scenes",
+  "actions", "unsupported"}`. `trigger.kind` is `time` (a timer, or an event trigger whose only event is a sunrise,
+  sunset or time of day) with `trigger.time`, or `event` with `trigger.events`. A time is `{"hour", "minute"}` or
+  `{"significant": "sunrise|sunset", "offsetMinutes"}`, with `weekdays` (1 is Sunday; none is every day). An event is
+  `characteristic` (`accessory`, `characteristic`, `type`, `value`), `threshold` (`min`, `max`), `presence` (`who`:
+  `me`, `anyone` or `everyone`, `arriving`), `location` (`arriving`; the region is left out), `duration` (`seconds`,
+  as an end event), `time` or `other` (`text`). Conditions are `time` (`after`, `before`), `characteristic`
+  (`comparison`, `value`), `presence` (`who`, `home`) or `other` (`text`, the predicate as HomeKit writes it): Wingman
+  recognises a part of the predicate by building it again with HomeKit's own predicate builders.
+- **Times:** a timer takes a clock time, every day or on one weekday; an event trigger takes a clock time or a sunrise
+  or sunset with an offset, on any weekdays. An automation started by accessories or presence keeps its events: the
+  Home app edits those, its end events and its conditions.
+- **Own actions:** HomeKit's API cannot give an automation actions of its own; `/automations/actions` changes those it
+  has, and refuses to add some to one that has none.
+- **Events:** `scenes` and `automations` events say those changed (in the Home app or through Wingman), `homes`
+  covers rooms and accessories' rooms, and `settings` says the owner turned the edits on or off: the bridge asks
+  `/info` again. Like `homes`, they are coalesced over a second and name no characteristic.
 
 ## Building
 
@@ -189,6 +249,9 @@ cannot ship this app with HomeKit. The ways out:
 
 - A password-authenticated pairing (SRP, as HAP does), so the ten minutes of pairing no longer trust the network.
 - A night-long soak test of the signed build: HomeKit's events across screen lock and sleep.
+- The structural edits against a real home: they are built on HomeKit's public API and tested on the demo home only.
+  Whether HomeKit takes them from a menu bar app as it takes writes, and how the Home app's automations on recent
+  systems (event triggers with calendar events) take a new time, is still to be seen.
 - Linux, which has no HomeKit.
 
 ## License
@@ -228,7 +291,9 @@ Settings › Demo (or **Try Demo Mode** when Wingman has no Home access or no ho
 "Demo Home (Synthetic)" instead of HomeKit's homes: seven accessories named "Demo …", one not responding.
 Every tab shows an orange DEMO MODE banner, the status line says so, and `/status` and `/homes` carry `"demo": true`.
 Writes change only these in-memory values; lock, garage door and alarm targets follow the same setting as
-real ones.
+real ones. Its rooms, three scenes ("Demo Evening (Synthetic)", the built-in "Good Night (Demo)", and "Demo Leave Home
+(Synthetic)", which locks the door) and two automations ("Demo Sunset (Synthetic)", "Demo Motion Light (Synthetic)")
+take every edit above in memory, with the same settings and checks.
 
 In demo mode the Bridges tab adds a **demo bridge** that runs inside Wingman: it pairs with a fresh code over TLS,
 pinning the certificate, reads the home, switches the demo floor lamp and is refused an unlock (or unlocks the demo lock while

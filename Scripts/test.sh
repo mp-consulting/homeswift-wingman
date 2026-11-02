@@ -4,7 +4,7 @@ set -eu
 cd "$(dirname "$0")/.."
 BUILD=$(mktemp -d "${TMPDIR:-/tmp}/wingman-tests.XXXXXX")
 trap 'rm -rf "$BUILD"' EXIT
-xcrun swiftc -parse-as-library -swift-version 6 App/Pairing.swift App/HTTPRequest.swift App/Identity.swift App/Settings.swift App/LocalServer.swift App/DemoStore.swift Tests/ServerTests.swift -o "$BUILD/server-tests"
+xcrun swiftc -parse-as-library -swift-version 6 App/Pairing.swift App/HTTPRequest.swift App/Identity.swift App/Settings.swift App/Structure.swift App/LocalServer.swift App/DemoStore.swift Tests/ServerTests.swift -o "$BUILD/server-tests"
 "$BUILD/server-tests"
 xcrun swiftc -parse-as-library -swift-version 6 MenuBar/StatusMenu.swift MenuBar/WingmanIcon.swift MenuBar/Update.swift MenuBar/Updater.swift Tests/PanelFixtures.swift Tests/PanelTests.swift -o "$BUILD/panel-tests"
 "$BUILD/panel-tests" "${1:-$BUILD/snapshots}"

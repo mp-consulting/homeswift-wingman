@@ -13,6 +13,14 @@ protocol WingmanStore: AnyObject {
     func readAll() async -> [String: Any]
     /// Lock, garage door and alarm targets are refused unless `allowSecurity`.
     func write(accessory: String, characteristic: String, value: Any, allowSecurity: Bool) async -> [String: Any]
+    /// Every home's scenes (action sets other than automations' own) and automations (triggers).
+    func scenesJSON() -> [[String: Any]]
+    func automationsJSON() -> [[String: Any]]
+    /// Applies a structural edit or runs a scene; the server has checked the owner's settings. A scene, or actions,
+    /// that operate a lock, garage door or alarm are refused unless `allowSecurity`.
+    func edit(_ edit: StructureEdit, allowSecurity: Bool) async -> StoreAnswer
+    /// The owner changed a setting bridges see in `/info`: a "settings" event.
+    func settingsChanged()
 }
 
 /// A JSON API over TLS on every interface, advertised over Bonjour as `_homeswift-wingman._tcp`, for a Homeswift
@@ -26,6 +34,9 @@ protocol WingmanStore: AnyObject {
 ///   `POST /read` (reads every value), `POST /write` (`{"accessory": id or name, "characteristic": its id, HAP UUID or
 ///   description, "value": …}`; lock, garage door and alarm targets only while **Let bridges operate locks and
 ///   doors** is on).
+/// - Apple Home's structure (`/info`'s `"features": ["structure"]`): `GET /scenes`, `GET /automations`, `POST
+///   /scenes/run` (needs **Let bridges change accessories**) and the edits in `StructureEdit.paths` (need **Let bridges
+///   edit rooms, scenes and automations**; `"structure"` in `/info` says whether it is on).
 ///
 /// The TXT record carries `v` (the API version), `id` (Wingman's) and `home` (the start of the SHA-256 of the
 /// homes' identifiers), so a bridge that finds two Wingmen for the same home can keep one.
@@ -41,6 +52,7 @@ final class LocalServer {
     private let configuration: () -> Configuration
     private let changesAllowed: () -> Bool
     private let securityAllowed: () -> Bool
+    private let structureAllowed: () -> Bool
     struct Configuration: Equatable { var port: UInt16; var advertise: Bool }
     struct Limits {
         var connections = 64
@@ -75,7 +87,8 @@ final class LocalServer {
     convenience init(store: any WingmanStore, pairing: Pairing, identity: Identity) {
         self.init(store: store, pairing: pairing, fingerprint: identity.fingerprint,
                   configuration: { Configuration(port: Settings.port, advertise: Settings.advertise) },
-                  changesAllowed: { Settings.allowChanges }, securityAllowed: { Settings.allowSecurity }, makeParameters: {
+                  changesAllowed: { Settings.allowChanges }, securityAllowed: { Settings.allowSecurity },
+                  structureAllowed: { Settings.allowStructure }, makeParameters: {
             let tls = NWProtocolTLS.Options()
             sec_protocol_options_set_local_identity(tls.securityProtocolOptions, sec_identity_create(identity.identity)!)
             sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
@@ -86,7 +99,7 @@ final class LocalServer {
     /// Dependency injection keeps network tests on loopback without HomeKit, defaults or Keychain access.
     init(store: any WingmanStore, pairing: Pairing, fingerprint: String,
          configuration: @escaping () -> Configuration, changesAllowed: @escaping () -> Bool,
-         securityAllowed: @escaping () -> Bool = { false },
+         securityAllowed: @escaping () -> Bool = { false }, structureAllowed: @escaping () -> Bool = { false },
          limits: Limits = Limits(), makeParameters: @escaping () -> NWParameters) {
         self.store = store
         self.pairing = pairing
@@ -94,6 +107,7 @@ final class LocalServer {
         self.configuration = configuration
         self.changesAllowed = changesAllowed
         self.securityAllowed = securityAllowed
+        self.structureAllowed = structureAllowed
         self.limits = limits
         self.makeParameters = makeParameters
         port = configuration().port
@@ -255,6 +269,8 @@ final class LocalServer {
                 "service": "homeswift-wingman", "api": Self.apiVersion, "id": pairing.wingmanID,
                 "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
                 "fingerprint": fingerprint, "pairing": pairing.open != nil,
+                // Additive, so `api` stays "1": a bridge looks for the feature rather than a version.
+                "features": ["structure"], "structure": structureAllowed(),
             ], on: connection)
             return
         case ("POST", "/pair"):
@@ -320,6 +336,26 @@ final class LocalServer {
                 let result = await store.write(accessory: accessory, characteristic: characteristic, value: value,
                                                allowSecurity: securityAllowed())
                 send(result, status: result["error"] == nil ? "200 OK" : "422 Unprocessable Content", on: connection)
+            }
+        case ("GET", "/scenes"): send(["scenes": store.scenesJSON()], on: connection)
+        case ("GET", "/automations"): send(["automations": store.automationsJSON()], on: connection)
+        case ("POST", let path) where StructureEdit.paths.contains(String(path.dropFirst())):
+            let edit: StructureEdit
+            do { edit = try StructureEdit.parse(path: String(path.dropFirst()), body: body) } catch {
+                send(["error": error.message], status: "400 Bad Request", on: connection)
+                return
+            }
+            // Checked again once the edit's turn comes, as for writes: the owner may have turned it off meanwhile.
+            let allowed = { edit.isStructural ? self.structureAllowed() : self.changesAllowed() }
+            guard allowed() else {
+                let refusal = edit.isStructural ? StoreAnswer.turnedOff : .forbidden("changes are turned off in Wingman's settings")
+                send(refusal.body, status: refusal.status, on: connection)
+                return
+            }
+            clients[ObjectIdentifier(connection)]?.work = Task {
+                guard !Task.isCancelled, pairing.contains(bridge.id), allowed() else { close(connection); return }
+                let answer = await store.edit(edit, allowSecurity: securityAllowed())
+                send(answer.body, status: answer.status, on: connection)
             }
         default: send(["error": "not found"], status: "404 Not Found", on: connection)
         }

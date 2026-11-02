@@ -37,6 +37,10 @@ Builds run from a copy in `~/Library/Caches/HomeswiftWingman/source`; edit the c
   example after a Home permission change), so a stale `/Applications` copy hides fixes in `~/Applications`.
 - Lock, garage door and alarm writes are refused unless `Settings.allowSecurity` (off by default), in `HomeStore` and
   `DemoStore`. Keep the two in step.
+- Structural edits (rooms, scenes, automations: `StructureEdit` in `App/Structure.swift`) need `Settings.allowStructure`
+  (off by default), checked in `LocalServer`; `HomeStore+Structure.swift` and `DemoStore` apply them with the same
+  administrator, security and value checks. HomeKit tells this app's delegate only of changes made elsewhere, so an
+  edit Wingman makes adds its own event.
 - Demo mode (Settings › Demo) serves a synthetic home labelled "Demo" and "(Synthetic)" everywhere. It exists so
   App Review can assess the app without a home or bridge. Keep every demo name, status field and banner clearly marked.
 - The app is "Homeswift Wingman.app" with the executable "Homeswift Wingman" (`PRODUCT_NAME`); the Swift module stays

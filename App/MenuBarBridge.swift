@@ -65,6 +65,11 @@ final class MenuBarBridge {
             case "advertise", "allowChanges", "allowSecurity":
                 UserDefaults.standard.set(enabled, forKey: String(parts[1]))
                 server?.applySettings()
+            case "allowStructure":
+                guard enabled != Settings.allowStructure else { return }
+                UserDefaults.standard.set(enabled, forKey: Settings.allowStructureKey)
+                // Bridges ask `/info` again and offer, or stop offering, the edits.
+                if Settings.demoMode { demo.settingsChanged() } else { store.settingsChanged() }
             case "launchAtLogin": panel.setLaunchAtLogin(enabled)
             case "demoMode":
                 guard enabled != Settings.demoMode else { return }
@@ -95,6 +100,7 @@ final class MenuBarBridge {
             "advertise": Settings.advertise,
             "allowChanges": Settings.allowChanges,
             "allowSecurity": Settings.allowSecurity,
+            "allowStructure": Settings.allowStructure,
             "launchAtLogin": panel.launchAtLogin,
             "events": demoMode ? demo.eventCount : store.eventCount,
             "serving": server != nil,
