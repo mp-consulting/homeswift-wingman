@@ -40,7 +40,10 @@ swiftc MenuBar/WingmanIcon.swift Scripts/generate-icon.swift -o /tmp/wingman-ico
 
 ## Pair a Homeswift bridge
 
-1. In Homeswift's web UI, open **Plugins › Wingman › On the network**: it lists the Wingman apps Bonjour finds.
+1. In Homeswift's web UI, open **Plugins › Wingman › On the network**: it lists the Wingman apps Bonjour finds. If
+   Wingman is missing, its headline says "Hidden from bridges: check Local Network access": allow Homeswift Wingman
+   in System Settings › Privacy & Security › Local Network (Settings › **Open Local Network Settings**), and it
+   appears within a minute, without a relaunch.
 2. In Wingman's menu, choose **Pair a Homeswift Bridge…**: it shows a six-digit code for ten minutes.
 3. On the Homeswift page, choose **Pair**, check that the certificate starts as the one in Wingman's window (Bridges
    tab), and type the code.
@@ -55,7 +58,9 @@ apple-mail-mcp's menu bar panel: SwiftUI with Liquid Glass on macOS 26, three ta
 
 - **Home:** the rooms and their accessories, those not responding, the value changes received, **Read All**.
 - **Bridges:** the pairing code with its countdown, the paired bridges (Remove), the certificate's fingerprint.
-- **Settings:** advertise over Bonjour, the port (8619), whether paired bridges may change accessories, open at login.
+- **Settings:** advertise over Bonjour, the port (8619), whether paired bridges may change accessories, operate locks
+  and doors, or edit rooms, scenes and automations, open at login. Each switch says under it what bridges cannot do
+  while it is off.
 
 The window is the Catalyst side's: SwiftUI cannot run in the AppKit bundle, because a Catalyst process loads the iOS
 SwiftUI. The menu bar item lives in that bundle (`MenuBar/`, loaded from `Contents/PlugIns`), because a Catalyst app
