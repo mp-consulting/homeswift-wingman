@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+- Recover by itself when macOS's Local Network privacy setting blocks Wingman's Bonjour advertisement ("Server failed: -65563: ServiceNotRunning", or a server bridges cannot find). Wingman restarts the server until Bonjour confirms the advertisement (after 10 seconds, backing off to a minute, or to 5 minutes while a bridge is connected by address), so it comes back once access is allowed, or after the Mac wakes, without a relaunch. Meanwhile the panel says "Hidden from bridges: check Local Network access" and offers **Open Local Network Settings**.
+- Each switch in Settings › Connection & access now says, under it, what bridges can't do while it is off, and when it has no effect because bridges can't change accessories.
+
 ## [0.3.0] - 2026-11-02
 
 - Serve Apple Home's rooms, scenes and automations to paired bridges, so Homeswift can show and edit them: `GET /scenes` and `GET /automations` list them with their actions, triggers and conditions; bridges can run scenes, and, with the new **Let bridges edit rooms, scenes and automations** (Settings › Connection & access, off by default), rename rooms, move accessories between rooms, rename, change, create and delete scenes, and turn on or off, rename, retime, change and delete automations. `/info` lists the `structure` feature, each home in `/homes` says whether this Mac's user may edit it, and `scenes`, `automations` and `settings` events tell bridges of changes. Demo mode has scenes and automations to try them on.

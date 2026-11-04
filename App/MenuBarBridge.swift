@@ -105,6 +105,7 @@ final class MenuBarBridge {
             "events": demoMode ? demo.eventCount : store.eventCount,
             "serving": server != nil,
             "listening": server?.state == "listening",
+            "advertisementMissing": server?.advertisementMissing == true,
             "fingerprint": server?.fingerprint ?? "",
             "port": Int(server?.port ?? Settings.port),
             "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
@@ -178,6 +179,8 @@ final class MenuBarBridge {
 
     private func headline() -> (String, String) {
         if let problem { return (problem, "error") }
+        // Before the server state: a PolicyDenied failure has the same cause and the same fix.
+        if server?.advertisementMissing == true { return ("Hidden from bridges: check Local Network access", "warning") }
         if let server, server.state != "listening" { return ("Server \(server.state)", "error") }
         if Settings.demoMode { return ("Demo mode: synthetic home, not your HomeKit data", "warning") }
         if store.authorization != "authorized" { return ("HomeKit access: \(store.authorization)", "warning") }
