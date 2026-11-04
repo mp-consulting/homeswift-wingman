@@ -339,7 +339,7 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         let keys: [String]
         switch selectedTab {
         case 1: keys = ["pairingCode", "pairingUntil", "serving", "bridges", "fingerprint", "pairingError", "demo", "demoLog", "demoBusy", "demoPaired"]
-        case 2: keys = ["advertise", "allowChanges", "allowSecurity", "allowStructure", "launchAtLogin", "demo", "port", "listening", "settingsError", "automaticUpdateChecks", "updateEnabled", "updateBlocker", "updateStatus", "updateBusy", "updateAvailable", "updateProgress"]
+        case 2: keys = ["advertise", "advertisementMissing", "allowChanges", "allowSecurity", "allowStructure", "launchAtLogin", "demo", "port", "listening", "settingsError", "automaticUpdateChecks", "updateEnabled", "updateBlocker", "updateStatus", "updateBusy", "updateAvailable", "updateProgress"]
         default: keys = ["homes", "lastRead", "demo", "offerDemo"]
         }
         let content = model.filter { keys.contains($0.key) }
@@ -376,8 +376,8 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         return button
     }
 
-    private func add(_ view: NSView, verticalPadding: CGFloat = 6) {
-        let wrapper = padded(view, top: verticalPadding, bottom: verticalPadding)
+    private func add(_ view: NSView, verticalPadding: CGFloat = 6, top: CGFloat? = nil) {
+        let wrapper = padded(view, top: top ?? verticalPadding, bottom: verticalPadding)
         body.addArrangedSubview(wrapper)
         wrapper.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
     }
@@ -407,6 +407,27 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         row.spacing = 12
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
         add(row)
+    }
+
+    /// What a switch means right now, shown under it, so a switch that is off says what bridges cannot do.
+    static func settingNote(_ key: String, _ model: [String: Any]) -> (text: String, warning: Bool)? {
+        let on = model[key] as? Bool == true
+        let changes = model["allowChanges"] as? Bool == true
+        if on, key == "advertise", model["advertisementMissing"] as? Bool == true {
+            return ("macOS isn’t showing Wingman to bridges. Make sure Homeswift Wingman is on in Local Network settings.", true)
+        }
+        if on, !changes, key == "allowSecurity" || key == "allowStructure" {
+            return ("No effect while bridges can’t change accessories.", false)
+        }
+        if on, key == "allowStructure" { return ("Edits change your home on every device, and need you to administer the home.", false) }
+        let off = [
+            "advertise": "Bridges can’t find this Mac on their own: enter its address and port \(model["port"] as? Int ?? 8619) on the bridge.",
+            "allowChanges": "Read-only: bridges see your home but can’t change accessories, run scenes or edit rooms.",
+            "allowSecurity": "Bridges can’t lock or unlock doors, open garage doors or arm alarms.",
+            "allowStructure": "Bridges can’t rename rooms or change scenes and automations.",
+            "launchAtLogin": "After this Mac restarts, bridges have no Apple Home until you open Wingman.",
+        ]
+        return on ? nil : off[key].map { ($0, false) }
     }
 
     private func row(_ title: String, _ control: NSView) {
@@ -568,6 +589,13 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
             control.target = self
             control.action = #selector(setting(_:))
             row(title, control)
+            if let note = Self.settingNote(key, model) {
+                let text = label(note.text, small: true)
+                if note.warning { text.textColor = .systemOrange }
+                add(text, top: 0)
+                // A warning offers its fix.
+                if note.warning { add(NSStackView(views: [button("Open Local Network Settings", "localNetworkSettings"), NSView()]), top: 0) }
+            }
         }
         let field = NSTextField(string: "\(model["port"] as? Int ?? 8619)")
         field.placeholderString = "Port"
@@ -586,7 +614,6 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         portError.isHidden = true
         add(portError)
         _ = checkPort()
-        add(label("Without Bonjour, bridges need this Mac’s address. Disabling changes stops bridges changing accessories, running scenes and editing the home. Locks, garage doors and alarms are changed only while bridges may operate locks and doors. Editing rooms, scenes and automations changes your home on every device, and needs you to administer the home.", small: true))
         if let error = model["settingsError"] as? String { add(label(error, small: true)) }
         section("Demo")
         let demo = NSSwitch()
@@ -713,6 +740,8 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
                 feedback?.alphaValue = 0
                 sender?.toolTip = "Click to copy pairing code"
             }
+        } else if action == "localNetworkSettings" {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
         } else if action == "copyFingerprint" {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(model["fingerprint"] as? String ?? "", forType: .string)

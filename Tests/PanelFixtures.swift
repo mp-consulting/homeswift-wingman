@@ -19,6 +19,17 @@ import AppKit
         ]]],
     ]
 
+    /// Switches off, and macOS hiding the advertisement, to show what each note says.
+    static var restrictedModel: [String: Any] {
+        var model = Self.model
+        model["headline"] = "Hidden from bridges: check Local Network access"
+        model["level"] = "warning"
+        model["advertisementMissing"] = true
+        model["allowChanges"] = false
+        model["allowStructure"] = true
+        return model
+    }
+
     static var demoModel: [String: Any] {
         var model = Self.model
         model["demo"] = true

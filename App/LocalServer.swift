@@ -58,6 +58,8 @@ final class LocalServer {
         var connections = 64
         var requestSeconds: Double = 10
         var responseSeconds: Double = 90
+        /// First wait before the watchdog restarts an unhealthy listener.
+        var restartSeconds: Double = 10
     }
     private let limits: Limits
     private final class Client {
@@ -77,6 +79,15 @@ final class LocalServer {
     private var advertising = true
     private var listener: NWListener?
     private var advertisedHome: String?
+    /// Local Network privacy blocks the Bonjour advertisement: the listener fails with PolicyDenied, or stays ready
+    /// with no registration. Kept across restarts so the panel does not flicker; cleared once Bonjour adds the service.
+    private(set) var advertisementMissing = false
+    private var advertised = false
+    /// Restarts a listener that failed, or that Bonjour has not confirmed: a failed NWListener never recovers, and
+    /// setting the service again on a blocked one does not register it once access is allowed.
+    private var watchdog: DispatchWorkItem?
+    /// Doubles while the listener stays unhealthy, back to `limits.restartSeconds` once it is healthy.
+    private lazy var restartDelay = limits.restartSeconds
     /// `GET /events?since=&wait=` requests held until a value changes or their wait ends.
     private var waiting: [(id: UUID, since: Int, connection: NWConnection)] = []
     private(set) var state = "starting"
@@ -121,13 +132,21 @@ final class LocalServer {
         start()
     }
 
-    func start() {
+    /// `publishing: false` keeps the panel on its last state through a restart the watchdog makes.
+    func start(publishing: Bool = true) {
+        let previous = state
         stop()
         let desired = configuration()
         port = desired.port
         advertising = desired.advertise
-        state = "starting"
-        onChange?()
+        // Kept across restarts so the panel does not flicker; cleared when Bonjour adds the service.
+        if !advertising { advertisementMissing = false }
+        if publishing {
+            state = "starting"
+            onChange?()
+        } else {
+            state = previous
+        }
         let currentGeneration = generation
         let parameters = makeParameters()
         do {
@@ -141,21 +160,42 @@ final class LocalServer {
             }
             listener.stateUpdateHandler = { [weak self] state in
                 MainActor.assumeIsolated {
-                    guard self?.generation == currentGeneration else { return }
+                    guard let self, self.generation == currentGeneration else { return }
                     switch state {
-                    case .ready: self?.state = "listening"
+                    case .ready:
+                        self.state = "listening"
+                        if self.advertising && !self.advertised { self.arm(currentGeneration) } else { self.healthy() }
                     case .cancelled: return
                     case .failed(let error):
-                        self?.state = "failed: \(error)"
                         NSLog("Wingman: listener failed: \(error)")
-                    case .waiting(let error): self?.state = "waiting: \(error)"
+                        self.state = "failed: \(error)"
+                        // Other DNS errors such as ServiceNotRunning can follow the block; a bind error is its own story.
+                        if Self.blocksBonjour(error) { self.advertisementMissing = true }
+                        else if case .dns = error {} else { self.advertisementMissing = false }
+                        self.arm(currentGeneration)
+                    case .waiting(let error):
+                        self.state = "waiting: \(error)"
+                        self.arm(currentGeneration)
                     default: break
                     }
-                    self?.onChange?()
+                    self.onChange?()
                 }
             }
-            listener.serviceRegistrationUpdateHandler = { change in
-                if case .add(let endpoint) = change { NSLog("Wingman: advertised \(endpoint)") }
+            listener.serviceRegistrationUpdateHandler = { [weak self] change in
+                MainActor.assumeIsolated {
+                    guard let self, self.generation == currentGeneration else { return }
+                    switch change {
+                    case .add(let endpoint):
+                        NSLog("Wingman: advertised \(endpoint)")
+                        self.advertised = true
+                        if self.state == "listening" { self.healthy() }
+                    case .remove:
+                        // Bonjour dropped it (mDNSResponder restarted, or the homes changed and it is re-adding).
+                        self.advertised = false
+                        self.arm(currentGeneration)
+                    @unknown default: break
+                    }
+                }
             }
             listener.start(queue: .main)
             self.listener = listener
@@ -163,8 +203,43 @@ final class LocalServer {
         } catch {
             state = "cannot listen on \(port): \(error)"
             NSLog("Wingman: cannot listen on \(port): \(error)")
+            advertisementMissing = false
+            arm(currentGeneration)
             onChange?()
         }
+    }
+
+    /// PolicyDenied: Local Network privacy refused the advertisement. ServiceNotRunning (-65563) also follows a
+    /// mDNSResponder restart after sleep, so it alone does not name the setting.
+    nonisolated static func blocksBonjour(_ error: NWError) -> Bool {
+        if case .dns(let code) = error { return code == -65570 }
+        return false
+    }
+
+    private func healthy() {
+        watchdog?.cancel()
+        restartDelay = limits.restartSeconds
+        if advertisementMissing { advertisementMissing = false; onChange?() }
+    }
+
+    private func arm(_ currentGeneration: UUID) {
+        watchdog?.cancel()
+        let delay = restartDelay
+        let check = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.generation == currentGeneration else { return }
+                let serving = self.state == "listening" && !self.clients.isEmpty
+                if self.state == "listening", !self.advertisementMissing { self.advertisementMissing = true; self.onChange?() }
+                // Bridges connected by address are served: drop them for the advertisement only every 5 minutes.
+                let cap: Double = serving ? 300 : 60
+                self.restartDelay = min(delay * 2, cap)
+                if serving, delay < cap { self.arm(currentGeneration); return }
+                NSLog("Wingman: \(self.state == "listening" ? "not advertised" : self.state) after \(Int(delay)) s, restarting the listener")
+                self.start(publishing: false)
+            }
+        }
+        watchdog = check
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: check)
     }
 
     /// Advertises the homes again when they change (they load after the listener starts).
@@ -190,6 +265,9 @@ final class LocalServer {
 
     func stop() {
         generation = UUID()
+        watchdog?.cancel()
+        watchdog = nil
+        advertised = false
         listener?.cancel()
         listener = nil
         for client in Array(clients.values) { close(client.connection) }

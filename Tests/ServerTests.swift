@@ -430,7 +430,7 @@ func expect(_ condition: Bool, _ message: String) throws {
         var changes = true
         let server = LocalServer(store: store, pairing: pairing, fingerprint: "fixture", configuration: { config }, changesAllowed: { changes },
                                  securityAllowed: { security }, structureAllowed: { structure },
-                                 limits: .init(connections: 3, requestSeconds: 0.5, responseSeconds: 2), makeParameters: {
+                                 limits: .init(connections: 3, requestSeconds: 0.5, responseSeconds: 2, restartSeconds: 0.2), makeParameters: {
             let parameters = NWParameters.tcp
             parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
             return parameters
@@ -438,6 +438,9 @@ func expect(_ condition: Bool, _ message: String) throws {
         defer { server.stop() }
         server.start()
         try await eventually("listener ready") { server.state == "listening" }
+        try expect(!server.advertisementMissing, "no Bonjour warning while advertising is off")
+        try expect(LocalServer.blocksBonjour(.dns(-65570)) && !LocalServer.blocksBonjour(.dns(-65563))
+                   && !LocalServer.blocksBonjour(.posix(.EADDRINUSE)), "only PolicyDenied names the privacy setting")
         let port = server.boundPort!
         func request(_ path: String, authenticated: Bool = true) -> TestClient {
             TestClient(port: port, request: "GET \(path) HTTP/1.1\r\nHost: localhost\r\n\(authenticated ? "Authorization: Bearer \(token)\r\n" : "")\r\n")
@@ -507,9 +510,9 @@ func expect(_ condition: Bool, _ message: String) throws {
         config.port = blocker.port!.rawValue
         server.start()
         try await eventually("bind failure") { server.state.hasPrefix("waiting:") || server.state.hasPrefix("failed:") || server.state.hasPrefix("cannot listen") }
+        try expect(!server.advertisementMissing, "a bind error does not blame Local Network")
         blocker.cancel()
-        try await Task.sleep(for: .milliseconds(100))
-        server.applySettings()
+        // The watchdog restarts the failed listener by itself.
         try await eventually("same-port retry recovers") { server.state == "listening" }
         let recovered = TestClient(port: server.boundPort!, request: "GET /info HTTP/1.1\r\n\r\n")
         try await eventually("recovered API") { recovered.ended }

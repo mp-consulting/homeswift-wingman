@@ -108,6 +108,19 @@ import AppKit
         panel.model = PanelFixtures.model
         try PanelFixtures.click("Home", in: panel)
         try expect(!text("DEMO MODE"), "no demo label on real homes")
+        try PanelFixtures.click("Settings", in: panel)
+        try expect(text("Bridges can’t lock or unlock doors, open garage doors or arm alarms.")
+                   && text("After this Mac restarts, bridges have no Apple Home until you open Wingman.")
+                   && !text("macOS isn’t showing Wingman"), "switches that are off say what bridges cannot do")
+        panel.model = PanelFixtures.restrictedModel
+        try expect(text("macOS isn’t showing Wingman to bridges. Make sure Homeswift Wingman is on in Local Network settings.")
+                   && text("Read-only: bridges see your home but can’t change accessories, run scenes or edit rooms.")
+                   && text("No effect while bridges can’t change accessories."), "notes follow the switches and the Local Network block")
+        try expect(PanelFixtures.descendants(panel.view).contains { $0.identifier?.rawValue == "localNetworkSettings" }, "the block offers its setting")
+        var advertiseOff = PanelFixtures.model
+        advertiseOff["advertise"] = false
+        panel.model = advertiseOff
+        try expect(text("Bridges can’t find this Mac on their own: enter its address and port 8619 on the bridge."), "Bonjour off says how bridges connect")
         let directory = URL(fileURLWithPath: CommandLine.arguments[1])
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for (style, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
@@ -124,13 +137,16 @@ import AppKit
             panel.model["pairingUntil"] = Date().addingTimeInterval(600).timeIntervalSince1970
             try PanelFixtures.click("Bridges", in: panel)
             try PanelFixtures.snapshot(panel, at: directory.appendingPathComponent("panel-pairing-\(name).png"))
+            panel.model = PanelFixtures.restrictedModel
+            try PanelFixtures.click("Settings", in: panel)
+            try PanelFixtures.snapshot(panel, at: directory.appendingPathComponent("panel-restricted-\(name).png"))
             panel.model = PanelFixtures.demoModel
             for tab in ["Home", "Bridges"] {
                 try PanelFixtures.click(tab, in: panel)
                 try PanelFixtures.snapshot(panel, at: directory.appendingPathComponent("panel-demo-\(tab.lowercased())-\(name).png"))
             }
         }
-        try expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".png") }.count == 12, "all actual panel screenshots rendered")
-        print("PASS: stable room identities, row reuse, removal confirmation, storage errors, demo mode labelling and 12 AppKit panel snapshots")
+        try expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".png") }.count == 14, "all actual panel screenshots rendered")
+        print("PASS: stable room identities, row reuse, removal confirmation, storage errors, demo mode labelling, setting notes and 14 AppKit panel snapshots")
     }
 }
