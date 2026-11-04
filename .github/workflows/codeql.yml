@@ -36,14 +36,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
-        with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-
-      - name: Build (Swift)
+      - name: Generate the Xcode project (Swift)
         if: matrix.language == 'swift'
-        # Same steps as Scripts/build.sh --unsigned, but in the checkout so findings map to repository paths.
+        # Same steps as Scripts/build.sh --unsigned, but in the checkout so findings map to repository paths. This runs
+        # before CodeQL init: under its tracer Homebrew runs through Rosetta and refuses to install into /opt/homebrew.
         run: |
           XCODE="$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -n 1)"
           sudo xcode-select -s "$XCODE"
@@ -51,6 +47,15 @@ jobs:
           xcodegen generate --quiet
           sed -i '' 's/SystemCapabilities = ".*";/SystemCapabilities = { com.apple.HomeKit = { enabled = 1; }; };/' \
               HomeswiftWingman.xcodeproj/project.pbxproj
+
+      - uses: github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Build (Swift)
+        if: matrix.language == 'swift'
+        run: |
           xcodebuild -project HomeswiftWingman.xcodeproj -scheme HomeswiftWingman -configuration Debug \
               -destination 'generic/platform=macOS,variant=Mac Catalyst' -derivedDataPath "$RUNNER_TEMP/build" \
               CODE_SIGNING_ALLOWED=NO -quiet build
