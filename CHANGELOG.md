@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+- The Bridges tab lists what paired bridges asked for, newest first, as apple-mail-mcp's panel does: pairing, Read All, accessory changes, scene runs and edits to rooms, zones, groups, scenes and automations, by name, each marked made, refused (with the setting that refused it) or failed (with HomeKit's reason). Hover a row for the bridge and how long it took. It covers the time since Wingman started.
 - Serve the Home Link, so a Homeswift bridge can keep Apple Home's rooms, zones and groups in step with its own (`home-link` in `/info`'s features). `/homes` now gives each home its Default Room, its zones' ids and room ids and its service groups, and each accessory its room's id (`null` in the Default Room). With **Let bridges edit rooms, scenes and automations** on, bridges can create and delete rooms, move an accessory to a room by id or to the Default Room, create, rename and delete zones and change their rooms, and create, rename and delete service groups and change their services. Changes to zones, service groups and service names made in the Home app are now `homes` events.
 - A service group left with no services (its accessories removed or added again under new ids) no longer holds its name: the Home app doesn't show it, so bridges may create or rename a group with that name.
 - Turning **Let bridges change accessories** on or off is now a `settings` event, so bridges see at once whether they may edit.

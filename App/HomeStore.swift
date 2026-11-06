@@ -129,6 +129,20 @@ final class HomeStore: NSObject, WingmanStore {
 
     func settingsChanged() { appendStructureEvent("settings", home: "", accessory: "") }
 
+    func name(of id: String) -> String? {
+        for home in homes {
+            if let accessory = home.accessories.first(where: { $0.uniqueIdentifier.uuidString == id }) { return accessory.name }
+            if let service = home.accessories.flatMap(\.services).first(where: { $0.uniqueIdentifier.uuidString == id }) {
+                return service.accessory.map { $0.name == service.name ? $0.name : "\($0.name) \(service.name)" } ?? service.name
+            }
+            let named: [(UUID, String)] = (home.rooms + [home.roomForEntireHome()]).map { ($0.uniqueIdentifier, $0.name) }
+                + home.zones.map { ($0.uniqueIdentifier, $0.name) } + home.serviceGroups.map { ($0.uniqueIdentifier, $0.name) }
+                + home.actionSets.map { ($0.uniqueIdentifier, $0.name) } + home.triggers.map { ($0.uniqueIdentifier, $0.name) }
+            if let found = named.first(where: { $0.0.uuidString == id }) { return found.1 }
+        }
+        return nil
+    }
+
     private func appendStructureEvent(_ kind: String, home: String, accessory: String) {
         lastSeq += 1
         append(Event(

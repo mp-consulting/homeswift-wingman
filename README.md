@@ -57,7 +57,10 @@ The menu bar item shows the headline, the homes and the pairing code. **Open Win
 apple-mail-mcp's menu bar panel: SwiftUI with Liquid Glass on macOS 26, three tabs.
 
 - **Home:** the rooms and their accessories, those not responding, the value changes received, **Read All**.
-- **Bridges:** the pairing code with its countdown, the paired bridges (Remove), the certificate's fingerprint.
+- **Bridges:** the pairing code with its countdown, the paired bridges (Remove), the certificate's fingerprint, and
+  the activity: what paired bridges asked for since Wingman started (pairing, Read All, accessory changes, scene runs
+  and edits to rooms, zones, groups, scenes and automations), each with whether it was made, refused by Wingman's
+  settings or failed, and why. The reads bridges make all the time are left out.
 - **Settings:** advertise over Bonjour, the port (8619), whether paired bridges may change accessories, operate locks
   and doors, or edit rooms, scenes and automations, open at login. Each switch says under it what bridges cannot do
   while it is off.

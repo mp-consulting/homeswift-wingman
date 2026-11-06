@@ -21,6 +21,12 @@ protocol WingmanStore: AnyObject {
     func edit(_ edit: StructureEdit, allowSecurity: Bool) async -> StoreAnswer
     /// The owner changed a setting bridges see in `/info`: a "settings" event.
     func settingsChanged()
+    /// The name of an accessory, service, room, zone, group, scene or automation by id, for the panel's Activity.
+    func name(of id: String) -> String?
+}
+
+extension WingmanStore {
+    func name(of id: String) -> String? { nil }
 }
 
 /// A JSON API over TLS on every interface, advertised over Bonjour as `_homeswift-wingman._tcp`, for a Homeswift
@@ -95,6 +101,8 @@ final class LocalServer {
     private var waiting: [(id: UUID, since: Int, connection: NWConnection)] = []
     private(set) var state = "starting"
     var onChange: (() -> Void)?
+    /// What paired bridges asked for, for the panel.
+    let activity = ActivityFeed()
     /// The certificate's SHA-256 (lowercase hex), for the menu bar panel.
     let fingerprint: String
 
@@ -338,6 +346,7 @@ final class LocalServer {
     }
 
     private func respond(to head: String, body: Data, on connection: NWConnection) {
+        let started = Date()
         let lines = head.split(separator: "\r\n")
         let parts = lines.first?.split(separator: " ") ?? []
         let method = parts.first.map(String.init) ?? ""
@@ -355,7 +364,7 @@ final class LocalServer {
             ], on: connection)
             return
         case ("POST", "/pair"):
-            pair(body, from: connection)
+            pair(body, from: connection, started: started)
             return
         default: break
         }
@@ -398,10 +407,15 @@ final class LocalServer {
         case ("POST", "/read"):
             clients[ObjectIdentifier(connection)]?.work = Task {
                 guard !Task.isCancelled, pairing.contains(bridge.id) else { close(connection); return }
-                send(await store.readAll(), on: connection)
+                let result = await store.readAll()
+                let failures = (result["failures"] as? [String: Int])?.values.reduce(0, +) ?? 0
+                note(bridge.name, "Read all values", "\(result["succeeded"] ?? 0) read" + (failures > 0 ? ", \(failures) failed" : ""),
+                     failures > 0 ? .failed : .read, since: started)
+                send(result, on: connection)
             }
         case ("POST", "/write"):
             guard changesAllowed() else {
+                note(bridge.name, "Changed accessory", "changes are turned off in Wingman's settings", .refused, since: started)
                 send(["error": "changes are turned off in Wingman's settings"], status: "403 Forbidden", on: connection)
                 return
             }
@@ -416,6 +430,14 @@ final class LocalServer {
                 guard !Task.isCancelled, pairing.contains(bridge.id), changesAllowed() else { close(connection); return }
                 let result = await store.write(accessory: accessory, characteristic: characteristic, value: value,
                                                allowSecurity: securityAllowed())
+                let target = result["accessory"] as? String ?? store.name(of: accessory) ?? accessory
+                let what = result["characteristic"] as? String ?? characteristic
+                if let error = result["error"] as? String {
+                    // A security control refused by Wingman's setting reads as a refusal, not as HomeKit failing.
+                    note(bridge.name, "Changed accessory", "\(target): \(error)", error.contains("Wingman's settings") ? .refused : .failed, since: started)
+                } else {
+                    note(bridge.name, "Changed accessory", "\(target): \(what) → \(ActivityFeed.describe(result["written"] ?? value))", .changed, since: started)
+                }
                 send(result, status: result["error"] == nil ? "200 OK" : "422 Unprocessable Content", on: connection)
             }
         case ("GET", "/scenes"): send(["scenes": store.scenesJSON()], on: connection)
@@ -429,14 +451,19 @@ final class LocalServer {
             // Checked again once the edit's turn comes, as for writes: the owner may have turned it off meanwhile.
             // An edit changes what scenes and automations write, so a read-only Wingman refuses it too.
             let allowed = { self.changesAllowed() && (!edit.isStructural || self.structureAllowed()) }
+            // Named now: a deleted room has no name once the edit ran.
+            let described = edit.activity { self.store.name(of: $0) }
             guard allowed() else {
                 let refusal = changesAllowed() ? StoreAnswer.turnedOff : .forbidden("changes are turned off in Wingman's settings")
+                note(bridge.name, described.title, "\(described.summary) · \(refusal.body["error"] ?? "")", .refused, since: started)
                 send(refusal.body, status: refusal.status, on: connection)
                 return
             }
             clients[ObjectIdentifier(connection)]?.work = Task {
                 guard !Task.isCancelled, pairing.contains(bridge.id), allowed() else { close(connection); return }
                 let answer = await store.edit(edit, allowSecurity: securityAllowed())
+                let summary = answer.body["error"].map { "\(described.summary) · \($0)" } ?? described.summary
+                note(bridge.name, described.title, summary, ActivityFeed.outcome(status: answer.status), since: started)
                 send(answer.body, status: answer.status, on: connection)
             }
         default: send(["error": "not found"], status: "404 Not Found", on: connection)
@@ -464,7 +491,12 @@ final class LocalServer {
         return query
     }
 
-    private func pair(_ body: Data, from connection: NWConnection) {
+    private func note(_ bridge: String, _ title: String, _ summary: String, _ outcome: ActivityFeed.Entry.Outcome, since started: Date) {
+        activity.record(.init(date: started, bridge: bridge, title: title, summary: summary, outcome: outcome,
+                              milliseconds: Int((Date().timeIntervalSince(started) * 1000).rounded())))
+    }
+
+    private func pair(_ body: Data, from connection: NWConnection, started: Date) {
         guard let request = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any], let code = request["code"] as? String else {
             send(["error": #"expected {"code", "name"}"#], status: "400 Bad Request", on: connection)
             return
@@ -473,13 +505,17 @@ final class LocalServer {
         switch pairing.pair(code: code, name: name) {
         case .paired(let token, let bridge):
             NSLog("Wingman: paired \(bridge.name) from \(Self.describe(connection.endpoint))")
+            note(bridge.name, "Paired", "from \(Self.describe(connection.endpoint))", .changed, since: started)
             send(["token": token, "bridge": bridge.id, "wingman": pairing.wingmanID, "fingerprint": fingerprint], on: connection)
         case .storageFailure:
+            note(name, "Paired", "Wingman could not save the pairing", .failed, since: started)
             send(["error": "Cannot persist pairing; check Wingman and retry"], status: "500 Internal Server Error", on: connection)
         case .notOpen:
+            // Not noted: anyone on the network can ask while pairing is closed, and would push real entries out.
             send(["error": "pairing is not open: choose Pair a Homeswift Bridge in Wingman's menu"], status: "403 Forbidden", on: connection)
         case .wrongCode(let closed):
             NSLog("Wingman: wrong pairing code from \(Self.describe(connection.endpoint))\(closed ? ", pairing closed" : "")")
+            note(name, "Paired", "wrong code from \(Self.describe(connection.endpoint))\(closed ? "; pairing closed" : "")", .refused, since: started)
             send(["error": closed ? "wrong code: pairing closed, open it again from the menu" : "wrong code"], status: "403 Forbidden", on: connection)
         }
     }

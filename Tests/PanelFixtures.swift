@@ -8,6 +8,7 @@ import AppKit
         "updateEnabled": true, "automaticUpdateChecks": true, "updateStatus": "Wingman is up to date.",
         "launchAtLogin": false, "version": "0.2.0", "fingerprint": String(repeating: "3f9a0c71", count: 8),
         "bridges": [["id": "demo-bridge", "name": "Demo Bridge"]],
+        "activity": activity,
         "homes": [["id": "demo-home", "name": "Demo Home", "rooms": [
             ["id": "living", "name": "Living Room", "accessories": [
                 ["id": "lamp", "name": "Floor Lamp", "detail": "Light", "symbol": "lightbulb", "reachable": true],
@@ -18,6 +19,20 @@ import AppKit
             ]],
         ]]],
     ]
+
+    /// A few minutes of a bridge at work, newest first, one of each outcome.
+    static let activity: [[String: Any]] = [
+        ("Changed accessory", "Floor Lamp: Power State → on", "changed", 2),
+        ("Ran scene", "Demo Evening", "changed", 5),
+        ("Renamed room", "Office → Study · structural edits are turned off in Wingman's settings", "refused", 9),
+        ("Moved accessory", "Desk Light → Office", "changed", 14),
+        ("Changed accessory", "Room Sensor: HomeKit could not reach the accessory (HMErrorDomain 4)", "failed", 21),
+        ("Read all values", "12 read", "read", 30),
+        ("Paired", "from 192.168.1.20", "changed", 31),
+    ].map { title, summary, outcome, minutes in
+        ["date": Date().addingTimeInterval(Double(-60 * minutes)).timeIntervalSince1970, "bridge": "Demo Bridge", "title": title,
+         "summary": summary, "outcome": outcome, "milliseconds": 120]
+    }
 
     /// Switches off, and macOS hiding the advertisement, to show what each note says.
     static var restrictedModel: [String: Any] {

@@ -121,6 +121,7 @@ final class MenuBarBridge {
                 return json
             },
         ]
+        model["activity"] = server?.activity.entries.prefix(30).map(\.panel) ?? []
         if let error = pairing.persistenceError { model["pairingError"] = error }
         if let error = panel.launchAtLoginError { model["settingsError"] = error }
         if let at = demoMode ? demo.lastEventAt : store.lastEventAt { model["lastEventAt"] = at.timeIntervalSince1970 }

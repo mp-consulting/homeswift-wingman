@@ -338,7 +338,7 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         // Value events update the header/footer without replacing rows under the pointer.
         let keys: [String]
         switch selectedTab {
-        case 1: keys = ["pairingCode", "pairingUntil", "serving", "bridges", "fingerprint", "pairingError", "demo", "demoLog", "demoBusy", "demoPaired"]
+        case 1: keys = ["pairingCode", "pairingUntil", "serving", "bridges", "fingerprint", "pairingError", "demo", "demoLog", "demoBusy", "demoPaired", "activity"]
         case 2: keys = ["advertise", "advertisementMissing", "allowChanges", "allowSecurity", "allowStructure", "launchAtLogin", "demo", "port", "listening", "settingsError", "automaticUpdateChecks", "updateEnabled", "updateBlocker", "updateStatus", "updateBusy", "updateAvailable", "updateProgress"]
         default: keys = ["homes", "lastRead", "demo", "offerDemo"]
         }
@@ -573,6 +573,69 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
             add(value)
             add(button("Copy fingerprint", "copyFingerprint"))
         }
+        activity()
+    }
+
+    /// What paired bridges asked for, newest first: one line each, a failure's reason on two.
+    private func activity() {
+        section("Activity")
+        let entries = model["activity"] as? [[String: Any]] ?? []
+        if entries.isEmpty {
+            add(label("Nothing yet. What paired bridges change in your home shows here.", small: true))
+            return
+        }
+        for entry in entries.prefix(20) { add(Self.activityRow(entry), verticalPadding: 3) }
+    }
+
+    /// A shape as well as a colour, so the outcome reads without telling green from orange.
+    static func activityStatus(_ outcome: String) -> (symbol: String, color: NSColor, label: String) {
+        switch outcome {
+        case "read": ("circle.fill", .systemGreen, "Read")
+        case "refused": ("hand.raised.fill", .systemOrange, "Refused")
+        case "failed": ("xmark.circle.fill", .systemRed, "Failed")
+        default: ("diamond.fill", .systemOrange, "Changed")
+        }
+    }
+
+    static func activityRow(_ entry: [String: Any]) -> NSView {
+        let outcome = entry["outcome"] as? String ?? "changed"
+        let status = activityStatus(outcome)
+        let mark = NSImageView(image: NSImage(systemSymbolName: status.symbol, accessibilityDescription: status.label)!)
+        mark.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+        mark.contentTintColor = status.color
+        mark.widthAnchor.constraint(equalToConstant: 10).isActive = true
+        let title = NSTextField(labelWithString: entry["title"] as? String ?? "")
+        title.font = .systemFont(ofSize: 11)
+        title.lineBreakMode = .byTruncatingTail
+        title.widthAnchor.constraint(equalToConstant: 118).isActive = true
+        let summary = NSTextField(wrappingLabelWithString: entry["summary"] as? String ?? "")
+        summary.font = .systemFont(ofSize: 11)
+        // A refusal or failure is the one summary worth a second line.
+        let trouble = outcome == "refused" || outcome == "failed"
+        summary.textColor = trouble ? .labelColor : .panelSecondary
+        summary.maximumNumberOfLines = trouble ? 2 : 1
+        summary.lineBreakMode = trouble ? .byWordWrapping : .byTruncatingTail
+        summary.cell?.truncatesLastVisibleLine = true
+        // The summary takes the width the time leaves, so every time lines up on the right.
+        summary.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        summary.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let date = Date(timeIntervalSince1970: entry["date"] as? Double ?? 0)
+        // The time alone reads as today: older entries show their day.
+        let time = NSTextField(labelWithString: Calendar.current.isDateInToday(date)
+            ? date.formatted(.dateTime.hour().minute()) : date.formatted(.dateTime.day().month(.abbreviated)))
+        time.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        time.textColor = .tertiaryLabelColor
+        time.setContentCompressionResistancePriority(.required, for: .horizontal)
+        time.setContentHuggingPriority(.required, for: .horizontal)
+        let row = NSStackView(views: [mark, title, summary, time])
+        row.spacing = 8
+        row.alignment = .firstBaseline
+        let bridge = entry["bridge"] as? String ?? "A bridge"
+        row.toolTip = "\(entry["summary"] as? String ?? "")\n\(bridge) · \(entry["milliseconds"] as? Int ?? 0) ms"
+        row.setAccessibilityElement(true)
+        row.setAccessibilityRole(.group)
+        row.setAccessibilityLabel("\(status.label): \(title.stringValue), \(summary.stringValue), by \(bridge), \(time.stringValue)")
+        return row
     }
 
     private func settings() {

@@ -668,7 +668,21 @@ func expect(_ condition: Bool, _ message: String) throws {
         let events = try await request("GET", "/events?since=\(since)")
         let kinds = (events.json["events"] as? [[String: Any]] ?? []).compactMap { $0["kind"] as? String }
         try expect(kinds == Array(repeating: "homes", count: 5), "a homes event for each edit made: \(kinds)")
-        print("PASS: Home Link routes, settings, refusals and events over loopback")
+
+        // The panel's Activity: what the bridge asked, by name, newest first; the polls above are not in it.
+        try expect((try await request("POST", "/write", #"{"accessory": "\#(lamp)", "characteristic": "Power State", "value": true}"#)).status.contains("200"), "a write")
+        _ = try await request("POST", "/read")
+        let feed = server.activity.entries
+        func line(_ index: Int) -> String { "\(feed[index].outcome.rawValue) \(feed[index].title): \(feed[index].summary)" }
+        try expect(feed.count == 11 && feed.allSatisfy { $0.bridge == "Fixture" }, "one entry per request that asks for something, polls left out: \(feed.map(\.title))")
+        try expect(line(0).hasPrefix("failed Read all values: ") || line(0).hasPrefix("read Read all values: "), "Read All: \(line(0))")
+        try expect(line(1) == "changed Changed accessory: Demo Floor Lamp: Power State → on", "a write by name, a switch as on: \(line(1))")
+        try expect(line(3).hasPrefix("failed Renamed group: Demo Pair (Synthetic) → Demo Lights (Synthetic) · "), "a HomeKit refusal says why: \(line(3))")
+        try expect(line(4) == "changed Created group: Demo Pair (Synthetic): Demo Floor Lamp", "a group's services by accessory: \(line(4))")
+        try expect(line(5) == "changed Moved accessory: Demo Floor Lamp → Default Room", "a move to the Default Room: \(line(5))")
+        try expect(line(6) == "changed Changed zone: Demo Top: added Demo Attic", "zone rooms by name: \(line(6))")
+        try expect(line(10).hasPrefix("refused Created room: Demo Attic · "), "a refusal by Wingman's settings: \(line(10))")
+        print("PASS: Home Link routes, settings, refusals, events and the activity feed over loopback")
     }
 
     @MainActor static func network() async throws {

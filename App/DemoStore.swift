@@ -120,6 +120,14 @@ final class DemoStore: WingmanStore {
 
     // MARK: WingmanStore
 
+    func name(of id: String) -> String? {
+        if let accessory = accessories.first(where: { $0.id == id || "\($0.id)-service" == id }) { return accessory.name }
+        let named: [(String, String)] = (rooms + [Self.defaultRoom]).map { ($0.id, $0.name) } + zones.map { ($0.id, $0.name) }
+            + serviceGroups.map { ($0.id, $0.name) } + scenes.map { ($0.id, $0.name) } + automations.map { ($0.id, $0.name) }
+        return named.first { $0.0 == id }?.1
+    }
+
+
     func statusJSON() -> [String: Any] {
         var status: [String: Any] = [
             "demo": true, "authorization": "demo", "homesLoaded": true, "homes": 1,
@@ -721,4 +729,5 @@ final class DemoSwitchStore: WingmanStore {
     func automationsJSON() -> [[String: Any]] { current.automationsJSON() }
     func edit(_ edit: StructureEdit, allowSecurity: Bool) async -> StoreAnswer { await current.edit(edit, allowSecurity: allowSecurity) }
     func settingsChanged() { current.settingsChanged() }
+    func name(of id: String) -> String? { current.name(of: id) }
 }
