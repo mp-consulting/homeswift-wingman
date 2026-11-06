@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+- Serve the Home Link, so a Homeswift bridge can keep Apple Home's rooms, zones and groups in step with its own (`home-link` in `/info`'s features). `/homes` now gives each home its Default Room, its zones' ids and room ids and its service groups, and each accessory its room's id (`null` in the Default Room). With **Let bridges edit rooms, scenes and automations** on, bridges can create and delete rooms, move an accessory to a room by id or to the Default Room, create, rename and delete zones and change their rooms, and create, rename and delete service groups and change their services. Changes to zones, service groups and service names made in the Home app are now `homes` events.
+- Turning **Let bridges change accessories** on or off is now a `settings` event, so bridges see at once whether they may edit.
+- Two homes changing in the same second now make a `homes` event each, instead of one for the first.
 - Recover by itself when macOS's Local Network privacy setting blocks Wingman's Bonjour advertisement ("Server failed: -65563: ServiceNotRunning", or a server bridges cannot find). Wingman restarts the server until Bonjour confirms the advertisement (after 10 seconds, backing off to a minute, or to 5 minutes while a bridge is connected by address), so it comes back once access is allowed, or after the Mac wakes, without a relaunch. Meanwhile the panel says "Hidden from bridges: check Local Network access" and offers **Open Local Network Settings**.
 - Each switch in Settings › Connection & access now says, under it, what bridges can't do while it is off, and when it has no effect because bridges can't change accessories.
 

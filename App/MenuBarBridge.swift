@@ -62,9 +62,15 @@ final class MenuBarBridge {
             guard parts.count == 3 else { return }
             let enabled = parts[2] == "1"
             switch parts[1] {
-            case "advertise", "allowChanges", "allowSecurity":
+            case "advertise", "allowSecurity":
                 UserDefaults.standard.set(enabled, forKey: String(parts[1]))
                 server?.applySettings()
+            case "allowChanges":
+                guard enabled != Settings.allowChanges else { return }
+                UserDefaults.standard.set(enabled, forKey: Settings.allowChangesKey)
+                server?.applySettings()
+                // `/info`'s `structure` needs it too: bridges ask again, as for allowStructure.
+                if Settings.demoMode { demo.settingsChanged() } else { store.settingsChanged() }
             case "allowStructure":
                 guard enabled != Settings.allowStructure else { return }
                 UserDefaults.standard.set(enabled, forKey: Settings.allowStructureKey)

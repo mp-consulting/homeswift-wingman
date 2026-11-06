@@ -14,7 +14,7 @@ final class HomeStore: NSObject, WingmanStore {
         let time: Date
         let home: String
         /// "value" for a characteristic's new value; "homes" when what `GET /homes` answers changed (accessories,
-        /// rooms, names, reachability), for bridges to read the homes again; "scenes" or "automations" when those
+        /// rooms, zones, service groups, names, reachability), for bridges to read the homes again; "scenes" or "automations" when those
         /// changed; "settings" when the owner changed what `GET /info` reports. Only a "value" event names a
         /// characteristic.
         let kind: String
@@ -44,7 +44,8 @@ final class HomeStore: NSObject, WingmanStore {
     private(set) var lastRefresh: [String: Any]?
     private var notificationErrors: [String: Int] = [:]
     private var lastValueChange: [UUID: Date] = [:]
-    /// HomeKit reports one edit in Home as several delegate calls: they make one event of each kind a second later.
+    /// HomeKit reports one edit in Home as several delegate calls: they make one event of each kind and home a second
+    /// later. Keyed by kind and home id, so two homes changing in the same second make two events.
     private var pendingStructureChanges: [String: (home: String, accessory: String)] = [:]
 
     var homes: [HMHome] { manager?.homes ?? [] }
@@ -116,11 +117,12 @@ final class HomeStore: NSObject, WingmanStore {
     /// "automations". Value statistics (`eventCount`, `eventsPerHour`) leave it out.
     func structureChanged(_ kind: String, _ home: HMHome?, _ accessory: HMAccessory? = nil) {
         onChange?()
-        guard pendingStructureChanges[kind] == nil else { return }
-        pendingStructureChanges[kind] = (home?.name ?? "", accessory?.name ?? "")
+        let key = "\(kind) \(home?.uniqueIdentifier.uuidString ?? "")"
+        guard pendingStructureChanges[key] == nil else { return }
+        pendingStructureChanges[key] = (home?.name ?? "", accessory?.name ?? "")
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
-            guard let self, let pending = self.pendingStructureChanges.removeValue(forKey: kind) else { return }
+            guard let self, let pending = self.pendingStructureChanges.removeValue(forKey: key) else { return }
             self.appendStructureEvent(kind, home: pending.home, accessory: pending.accessory)
         }
     }
@@ -262,7 +264,9 @@ final class HomeStore: NSObject, WingmanStore {
 
     func homesJSON() -> [[String: Any]] {
         homes.map { home in
-            let roomNames = Dictionary(uniqueKeysWithValues: (home.rooms + [home.roomForEntireHome()]).map { ($0.uniqueIdentifier, $0.name) })
+            let defaultRoom = home.roomForEntireHome()
+            let roomNames = Dictionary(uniqueKeysWithValues: (home.rooms + [defaultRoom]).map { ($0.uniqueIdentifier, $0.name) })
+            let roomIDs = Set(home.rooms.map(\.uniqueIdentifier))
             return [
                 "id": home.uniqueIdentifier.uuidString,
                 "name": home.name,
@@ -272,14 +276,29 @@ final class HomeStore: NSObject, WingmanStore {
                 "rooms": home.rooms.map { room in
                     ["id": room.uniqueIdentifier.uuidString, "name": room.name, "accessories": room.accessories.count] as [String: Any]
                 },
+                // Where accessories in no room are: never one of `rooms`, and an accessory's `roomID` there is null.
+                "defaultRoom": ["id": defaultRoom.uniqueIdentifier.uuidString, "name": defaultRoom.name],
                 "zones": home.zones.map { zone in
-                    ["name": zone.name, "rooms": zone.rooms.map(\.name)] as [String: Any]
+                    [
+                        "id": zone.uniqueIdentifier.uuidString, "name": zone.name, "rooms": zone.rooms.map(\.name),
+                        "roomIDs": zone.rooms.map(\.uniqueIdentifier.uuidString),
+                    ] as [String: Any]
+                },
+                "serviceGroups": home.serviceGroups.map { group in
+                    [
+                        "id": group.uniqueIdentifier.uuidString, "name": group.name,
+                        "services": group.services.map(\.uniqueIdentifier.uuidString),
+                    ] as [String: Any]
                 },
                 "scenes": home.actionSets.map { set in
                     ["name": set.name, "type": set.actionSetType, "actions": set.actions.count] as [String: Any]
                 },
                 "accessories": home.accessories.map { accessory in
-                    accessoryJSON(accessory, room: accessory.room.flatMap { roomNames[$0.uniqueIdentifier] })
+                    // HomeKit gives an accessory in no room the Default Room: recognised as the one not in `rooms`.
+                    let roomID: Any = accessory.room.flatMap { roomIDs.contains($0.uniqueIdentifier) ? $0.uniqueIdentifier.uuidString : nil } ?? NSNull()
+                    var json = accessoryJSON(accessory, room: accessory.room.flatMap { roomNames[$0.uniqueIdentifier] })
+                    json["roomID"] = roomID
+                    return json
                 },
             ]
         }
@@ -445,6 +464,18 @@ extension HomeStore: @preconcurrency HMHomeDelegate {
     /// Becoming or ceasing to be an administrator changes `editable`.
     func homeDidUpdateAccessControl(forCurrentUser home: HMHome) { structureChanged("homes", home) }
 
+    // Zones and service groups are in `/homes` too.
+    func home(_ home: HMHome, didAdd zone: HMZone) { structureChanged("homes", home) }
+    func home(_ home: HMHome, didRemove zone: HMZone) { structureChanged("homes", home) }
+    func home(_ home: HMHome, didUpdateNameFor zone: HMZone) { structureChanged("homes", home) }
+    func home(_ home: HMHome, didAdd room: HMRoom, to zone: HMZone) { structureChanged("homes", home) }
+    func home(_ home: HMHome, didRemove room: HMRoom, from zone: HMZone) { structureChanged("homes", home) }
+    func home(_ home: HMHome, didAdd group: HMServiceGroup) { structureChanged("homes", home) }
+    func home(_ home: HMHome, didRemove group: HMServiceGroup) { structureChanged("homes", home) }
+    func home(_ home: HMHome, didUpdateNameFor group: HMServiceGroup) { structureChanged("homes", home) }
+    func home(_ home: HMHome, didAdd service: HMService, to group: HMServiceGroup) { structureChanged("homes", home) }
+    func home(_ home: HMHome, didRemove service: HMService, from group: HMServiceGroup) { structureChanged("homes", home) }
+
     func home(_ home: HMHome, didAdd actionSet: HMActionSet) { structureChanged(Self.kind(of: actionSet), home) }
     func home(_ home: HMHome, didRemove actionSet: HMActionSet) { structureChanged(Self.kind(of: actionSet), home) }
     func home(_ home: HMHome, didUpdateNameFor actionSet: HMActionSet) { structureChanged(Self.kind(of: actionSet), home) }
@@ -467,6 +498,8 @@ extension HomeStore: @preconcurrency HMAccessoryDelegate {
 
     func accessoryDidUpdateReachability(_ accessory: HMAccessory) { structureChanged("homes", home(of: accessory), accessory) }
     func accessoryDidUpdateName(_ accessory: HMAccessory) { structureChanged("homes", home(of: accessory), accessory) }
+    /// A service's name is in `/homes`, and is what a service group shows.
+    func accessory(_ accessory: HMAccessory, didUpdateNameFor service: HMService) { structureChanged("homes", home(of: accessory), accessory) }
     func accessoryDidUpdateServices(_ accessory: HMAccessory) {
         watch(accessory)
         structureChanged("homes", home(of: accessory), accessory)

@@ -105,7 +105,7 @@ curl -sk https://127.0.0.1:8619/info # id, version, certificate fingerprint, whe
 curl -sk https://127.0.0.1:8619/pair -d '{"code": "123456", "name": "My bridge"}'   # → {"token", …}
 H="Authorization: Bearer <token>"
 curl -sk -H "$H" https://127.0.0.1:8619/status        # authorization, counts, events received, last read
-curl -sk -H "$H" https://127.0.0.1:8619/homes         # homes → rooms, zones, scenes, accessories → services → characteristics
+curl -sk -H "$H" https://127.0.0.1:8619/homes         # homes → rooms, zones, service groups, scenes, accessories → services → characteristics
 curl -sk -H "$H" https://127.0.0.1:8619/events        # the latest value changes HomeKit pushed, newest first
 curl -sk -H "$H" "https://127.0.0.1:8619/events?since=42&wait=25"   # those after seq 42, waiting up to 25 s for one
 curl -sk -H "$H" -X POST https://127.0.0.1:8619/read  # reads every readable value; failures grouped by error
@@ -178,8 +178,41 @@ changes made before it: HomeKit has no transaction). Every action is checked bef
 - **Own actions:** HomeKit's API cannot give an automation actions of its own; `/automations/actions` changes those it
   has, and refuses to add some to one that has none.
 - **Events:** `scenes` and `automations` events say those changed (in the Home app or through Wingman), `homes`
-  covers rooms and accessories' rooms, and `settings` says the owner turned the edits on or off: the bridge asks
-  `/info` again. Like `homes`, they are coalesced over a second and name no characteristic.
+  covers rooms, zones, service groups, service names and accessories' rooms, and `settings` says the owner turned
+  the edits or changes on or off: the bridge asks `/info` again. Like `homes`, they are coalesced over a second for
+  each home and name no characteristic.
+
+## The Home Link
+
+`GET /info` also lists `"home-link"` in `features`: Wingman serves the Home's rooms, zones and service groups by
+HomeKit id, so a Homeswift bridge can keep a linked copy of them. Each home in `/homes` gains, besides what it had:
+
+- `defaultRoom`: `{"id", "name"}`, HomeKit's room for the entire home, where accessories in no room are. `rooms`
+  still leaves it out.
+- every accessory's `roomID`: its room's id, or `null` in the Default Room (`room`, the name, stays).
+- every zone's `id` and `roomIDs` (`name` and `rooms`, the names, stay).
+- `serviceGroups`: `[{"id", "name", "services": [id]}]`, the service ids being those of `services[].id`.
+
+The edits are structural, like the others: they need both settings and a user who administers the home.
+
+| Method and path | Body | Answers |
+|---|---|---|
+| `POST /rooms/create` | `{"name", "home"?}` | `{"room": {"id", "name"}, "added"}`: a room already named so (case and accents aside) is answered with `"added": false` |
+| `POST /rooms/delete` | `{"room"}` | `{"room"}`; its accessories go to the Default Room |
+| `POST /accessories/room` | `{"accessory", "roomID": id or null}` | `{"accessory", "roomID"}`; `null` (or the Default Room's id) is the Default Room |
+| `POST /zones/create` | `{"name", "home"?}` | `{"zone": {"id", "name"}, "added"}`, as for rooms |
+| `POST /zones/rename` | `{"zone", "name"}` | `{"zone", "name"}` |
+| `POST /zones/delete` | `{"zone"}` | `{"zone"}` |
+| `POST /zones/rooms` | `{"zone", "add": [roomID], "remove": [roomID]}` | `{"zone", "roomIDs"}` |
+| `POST /groups/create` | `{"name", "services": [serviceID], "home"?}` | `{"group": {"id", "name"}}` |
+| `POST /groups/rename` | `{"group", "name"}` | `{"group", "name"}` |
+| `POST /groups/delete` | `{"group"}` | `{"group"}` |
+| `POST /groups/services` | `{"group", "add": [serviceID], "remove": [serviceID]}` | `{"group", "services"}` |
+
+`home` is needed only when Wingman serves several homes: without it, a room or zone is created in the only one, and a
+group in its first service's. Names are trimmed and have 1 to 64 characters (else `400`). An unknown id is `404`
+(every id is checked before anything changes), a name another zone or group of the home has, case and accents
+aside, `422`, and so is a HomeKit refusal, with `done` as above.
 
 ## Building
 

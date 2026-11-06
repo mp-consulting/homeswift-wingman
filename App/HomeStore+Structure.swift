@@ -1,8 +1,9 @@
 import CoreLocation
 import HomeKit
 
-/// Apple Home's rooms, scenes (action sets) and automations (triggers) through HomeKit: the JSON of `GET /scenes` and
-/// `GET /automations`, and the edits of `StructureEdit`. README.md, "Rooms, scenes and automations", has the API.
+/// Apple Home's rooms, zones, service groups, scenes (action sets) and automations (triggers) through HomeKit: the JSON
+/// of `GET /scenes` and `GET /automations`, and the edits of `StructureEdit`. README.md, "Rooms, scenes and
+/// automations" and "The Home Link", has the API.
 extension HomeStore {
     /// HomeKit refuses structural edits from a user who does not administer the home.
     func isAdministrator(_ home: HMHome) -> Bool {
@@ -250,9 +251,11 @@ extension HomeStore {
     // MARK: Edits
 
     func edit(_ edit: StructureEdit, allowSecurity: Bool) async -> StoreAnswer {
+        // Found first: a deleted room, zone or group is gone afterwards.
+        let home = home(of: edit)
         let answer = await apply(edit, allowSecurity: allowSecurity)
         // HomeKit tells this app's delegate only of changes made elsewhere: say this one to every bridge.
-        if answer.status.hasPrefix("200"), let kind = edit.eventKind { structureChanged(kind, nil) }
+        if answer.status.hasPrefix("200"), let kind = edit.eventKind { structureChanged(kind, home) }
         return answer
     }
 
@@ -285,6 +288,147 @@ extension HomeStore {
                 return .refused(Self.describe(error), done: added ? 1 : 0)
             }
             return .ok(["accessory": id, "room": target.name, "roomID": target.uniqueIdentifier.uuidString, "added": added])
+
+        // MARK: The Home Link's edits
+
+        case .createRoom(let homeID, let name):
+            let (found, refusal) = target(homeID)
+            guard let home = found else { return refusal ?? .notFound("no home") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            // Names are unique in the Home, case and accents aside: the bridge's room setting names one.
+            if let existing = home.rooms.first(where: { sameRoomName($0.name, name) }) {
+                return .ok(["room": Self.reference(existing.uniqueIdentifier, existing.name), "added": false])
+            }
+            let (room, error) = await Self.addRoom(name, to: home)
+            guard let room else { return .refused(error.map(Self.describe) ?? "HomeKit added no room") }
+            return .ok(["room": Self.reference(room.uniqueIdentifier, room.name), "added": true])
+
+        case .deleteRoom(let id):
+            // The Default Room is not in `rooms`, so it is not found: HomeKit keeps it.
+            guard let (home, room) = room(id) else { return .notFound("no room \(id)") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            // HomeKit puts the room's accessories in the Default Room and takes the room out of its zones.
+            if let error = await Self.homeKit({ home.removeRoom(room, completionHandler: $0) }) { return .refused(Self.describe(error)) }
+            return .ok(["room": id])
+
+        case .assignAccessory(let id, let roomID):
+            guard let (home, accessory) = accessory(id) else { return .notFound("no accessory \(id)") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            let defaultRoom = home.roomForEntireHome()
+            let target: HMRoom
+            if let roomID, roomID != defaultRoom.uniqueIdentifier.uuidString {
+                guard let room = home.rooms.first(where: { $0.uniqueIdentifier.uuidString == roomID }) else {
+                    return .notFound("no room \(roomID) in \(home.name)")
+                }
+                target = room
+            } else {
+                target = defaultRoom
+            }
+            if accessory.room?.uniqueIdentifier != target.uniqueIdentifier,
+               let error = await Self.homeKit({ home.assignAccessory(accessory, to: target, completionHandler: $0) }) {
+                return .refused(Self.describe(error))
+            }
+            let answered: Any = target.uniqueIdentifier == defaultRoom.uniqueIdentifier ? NSNull() : target.uniqueIdentifier.uuidString as Any
+            return .ok(["accessory": id, "roomID": answered])
+
+        case .createZone(let homeID, let name):
+            let (found, refusal) = target(homeID)
+            guard let home = found else { return refusal ?? .notFound("no home") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            if let existing = home.zones.first(where: { sameRoomName($0.name, name) }) {
+                return .ok(["zone": Self.reference(existing.uniqueIdentifier, existing.name), "added": false])
+            }
+            let (zone, error) = await Self.addZone(name, to: home)
+            guard let zone else { return .refused(error.map(Self.describe) ?? "HomeKit added no zone") }
+            return .ok(["zone": Self.reference(zone.uniqueIdentifier, zone.name), "added": true])
+
+        case .renameZone(let id, let name):
+            guard let (home, zone) = zone(id) else { return .notFound("no zone \(id)") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            if home.zones.contains(where: { $0 != zone && sameRoomName($0.name, name) }) { return .refused("\(home.name) already has a zone named \(name)") }
+            if let error = await Self.homeKit({ zone.updateName(name, completionHandler: $0) }) { return .refused(Self.describe(error)) }
+            return .ok(["zone": id, "name": zone.name])
+
+        case .deleteZone(let id):
+            guard let (home, zone) = zone(id) else { return .notFound("no zone \(id)") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            if let error = await Self.homeKit({ home.removeZone(zone, completionHandler: $0) }) { return .refused(Self.describe(error)) }
+            return .ok(["zone": id])
+
+        case .zoneRooms(let id, let add, let remove):
+            guard let (home, zone) = zone(id) else { return .notFound("no zone \(id)") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            // Every id found before anything changes; the Default Room is in no zone.
+            if let missing = (add + remove).first(where: { roomID in !home.rooms.contains { $0.uniqueIdentifier.uuidString == roomID } }) {
+                return .notFound("no room \(missing) in \(home.name)")
+            }
+            let adding = add.compactMap { roomID in home.rooms.first { $0.uniqueIdentifier.uuidString == roomID } }
+            let removing = remove.compactMap { roomID in home.rooms.first { $0.uniqueIdentifier.uuidString == roomID } }
+            var done = 0
+            for room in removing where zone.rooms.contains(room) {
+                if let error = await Self.homeKit({ zone.removeRoom(room, completionHandler: $0) }) { return .refused(Self.describe(error), done: done) }
+                done += 1
+            }
+            for room in adding where !zone.rooms.contains(room) {
+                if let error = await Self.homeKit({ zone.addRoom(room, completionHandler: $0) }) { return .refused(Self.describe(error), done: done) }
+                done += 1
+            }
+            return .ok(["zone": id, "roomIDs": zone.rooms.map(\.uniqueIdentifier.uuidString)])
+
+        case .createGroup(let homeID, let name, let serviceIDs):
+            let (found, refusal) = groupHome(homeID, serviceIDs)
+            guard let home = found else { return refusal ?? .notFound("no home") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            var services: [HMService] = []
+            for serviceID in serviceIDs {
+                guard let service = service(serviceID, in: home) else { return .notFound("no service \(serviceID) in \(home.name)") }
+                services.append(service)
+            }
+            if home.serviceGroups.contains(where: { sameRoomName($0.name, name) }) { return .refused("\(home.name) already has a group named \(name)") }
+            let (created, error) = await Self.addServiceGroup(name, to: home)
+            guard let group = created else { return .refused(error.map(Self.describe) ?? "HomeKit added no group") }
+            for service in services {
+                if let error = await Self.homeKit({ group.addService(service, completionHandler: $0) }) {
+                    // Half a group is worse than none.
+                    _ = await Self.homeKit({ home.removeServiceGroup(group, completionHandler: $0) })
+                    return .refused("\(Self.describe(error)); the group was not kept")
+                }
+            }
+            return .ok(["group": Self.reference(group.uniqueIdentifier, group.name)])
+
+        case .renameGroup(let id, let name):
+            guard let (home, group) = group(id) else { return .notFound("no group \(id)") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            if home.serviceGroups.contains(where: { $0 != group && sameRoomName($0.name, name) }) {
+                return .refused("\(home.name) already has a group named \(name)")
+            }
+            if let error = await Self.homeKit({ group.updateName(name, completionHandler: $0) }) { return .refused(Self.describe(error)) }
+            return .ok(["group": id, "name": group.name])
+
+        case .deleteGroup(let id):
+            guard let (home, group) = group(id) else { return .notFound("no group \(id)") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            if let error = await Self.homeKit({ home.removeServiceGroup(group, completionHandler: $0) }) { return .refused(Self.describe(error)) }
+            return .ok(["group": id])
+
+        case .groupServices(let id, let add, let remove):
+            guard let (home, group) = group(id) else { return .notFound("no group \(id)") }
+            guard isAdministrator(home) else { return .notAdministrator }
+            if let missing = (add + remove).first(where: { service($0, in: home) == nil }) {
+                return .notFound("no service \(missing) in \(home.name)")
+            }
+            let adding = add.compactMap { service($0, in: home) }
+            let removing = remove.compactMap { service($0, in: home) }
+            var done = 0
+            for service in removing where group.services.contains(service) {
+                if let error = await Self.homeKit({ group.removeService(service, completionHandler: $0) }) { return .refused(Self.describe(error), done: done) }
+                done += 1
+            }
+            for service in adding where !group.services.contains(service) {
+                if let error = await Self.homeKit({ group.addService(service, completionHandler: $0) }) { return .refused(Self.describe(error), done: done) }
+                done += 1
+            }
+            return .ok(["group": id, "services": group.services.map(\.uniqueIdentifier.uuidString)])
 
         case .runScene(let id):
             guard let (home, set) = scene(id) else { return .notFound("no scene \(id)") }
@@ -412,6 +556,70 @@ extension HomeStore {
         for home in homes { if let room = home.rooms.first(where: { $0.uniqueIdentifier.uuidString == id }) { return (home, room) } }
         return nil
     }
+
+    private func accessory(_ id: String) -> (HMHome, HMAccessory)? {
+        for home in homes {
+            if let accessory = home.accessories.first(where: { $0.uniqueIdentifier.uuidString == id }) { return (home, accessory) }
+        }
+        return nil
+    }
+
+    private func zone(_ id: String) -> (HMHome, HMZone)? {
+        for home in homes { if let zone = home.zones.first(where: { $0.uniqueIdentifier.uuidString == id }) { return (home, zone) } }
+        return nil
+    }
+
+    private func group(_ id: String) -> (HMHome, HMServiceGroup)? {
+        for home in homes {
+            if let group = home.serviceGroups.first(where: { $0.uniqueIdentifier.uuidString == id }) { return (home, group) }
+        }
+        return nil
+    }
+
+    private func service(_ id: String, in home: HMHome) -> HMService? {
+        for accessory in home.accessories {
+            if let service = accessory.services.first(where: { $0.uniqueIdentifier.uuidString == id }) { return service }
+        }
+        return nil
+    }
+
+    /// The home a create names; without one, the only home, since Wingman cannot tell which of several is meant.
+    private func target(_ homeID: String?) -> (HMHome?, StoreAnswer?) {
+        if let homeID {
+            guard let home = homes.first(where: { $0.uniqueIdentifier.uuidString == homeID }) else { return (nil, .notFound("no home \(homeID)")) }
+            return (home, nil)
+        }
+        if homes.count == 1 { return (homes[0], nil) }
+        if homes.isEmpty { return (nil, .notFound("no home")) }
+        return (nil, .badRequest(#"expected "home", an id: Wingman serves \#(homes.count) homes"#))
+    }
+
+    /// A group's home: the one named, else its first service's, else the only one.
+    private func groupHome(_ homeID: String?, _ serviceIDs: [String]) -> (HMHome?, StoreAnswer?) {
+        if homeID == nil, let first = serviceIDs.first {
+            guard let home = homes.first(where: { service(first, in: $0) != nil }) else { return (nil, .notFound("no service \(first)")) }
+            return (home, nil)
+        }
+        return target(homeID)
+    }
+
+    /// The home an edit changes, for its event.
+    private func home(of edit: StructureEdit) -> HMHome? {
+        switch edit {
+        case .renameRoom(let id, _), .deleteRoom(let id): room(id)?.0
+        case .moveAccessory(let id, _), .assignAccessory(let id, _): accessory(id)?.0
+        case .createRoom(let homeID, _), .createZone(let homeID, _): target(homeID).0
+        case .createGroup(let homeID, _, let services): groupHome(homeID, services).0
+        case .renameZone(let id, _), .deleteZone(let id), .zoneRooms(let id, _, _): zone(id)?.0
+        case .renameGroup(let id, _), .deleteGroup(let id), .groupServices(let id, _, _): group(id)?.0
+        case .runScene(let id), .renameScene(let id, _), .sceneActions(let id, _), .deleteScene(let id): scene(id)?.0
+        case .createScene(let homeID, _, _): homes.first { $0.uniqueIdentifier.uuidString == homeID }
+        case .enableAutomation(let id, _), .renameAutomation(let id, _), .automationTime(let id, _), .automationScenes(let id, _),
+             .automationActions(let id, _), .deleteAutomation(let id): trigger(id)?.0
+        }
+    }
+
+    private static func reference(_ id: UUID, _ name: String) -> [String: Any] { ["id": id.uuidString, "name": name] }
 
     /// A scene: an action set other than an automation's own.
     private func scene(_ id: String) -> (HMHome, HMActionSet)? {
@@ -557,6 +765,18 @@ extension HomeStore {
     private static func addRoom(_ name: String, to home: HMHome) async -> (HMRoom?, Error?) {
         await withCheckedContinuation { continuation in
             home.addRoom(withName: name) { room, error in continuation.resume(returning: (room, error)) }
+        }
+    }
+
+    private static func addZone(_ name: String, to home: HMHome) async -> (HMZone?, Error?) {
+        await withCheckedContinuation { continuation in
+            home.addZone(withName: name) { zone, error in continuation.resume(returning: (zone, error)) }
+        }
+    }
+
+    private static func addServiceGroup(_ name: String, to home: HMHome) async -> (HMServiceGroup?, Error?) {
+        await withCheckedContinuation { continuation in
+            home.addServiceGroup(withName: name) { group, error in continuation.resume(returning: (group, error)) }
         }
     }
 

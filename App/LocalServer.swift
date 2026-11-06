@@ -37,6 +37,9 @@ protocol WingmanStore: AnyObject {
 /// - Apple Home's structure (`/info`'s `"features": ["structure"]`): `GET /scenes`, `GET /automations`, `POST
 ///   /scenes/run` (needs **Let bridges change accessories**) and the edits in `StructureEdit.paths` (need that and
 ///   **Let bridges edit rooms, scenes and automations**; `"structure"` in `/info` says whether both are on).
+/// - The Home Link (`"home-link"` in `/info`'s features): `/homes` gives each home its `defaultRoom`, `serviceGroups`,
+///   zones' `id` and `roomIDs` and accessories' `roomID`; the edits `rooms/create`, `rooms/delete`, `accessories/room`
+///   with a `roomID`, `zones/…` and `groups/…`, by HomeKit id, are structural like the others.
 ///
 /// The TXT record carries `v` (the API version), `id` (Wingman's) and `home` (the start of the SHA-256 of the
 /// homes' identifiers), so a bridge that finds two Wingmen for the same home can keep one.
@@ -348,7 +351,7 @@ final class LocalServer {
                 "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
                 "fingerprint": fingerprint, "pairing": pairing.open != nil,
                 // Additive, so `api` stays "1": a bridge looks for the feature rather than a version.
-                "features": ["structure"], "structure": structureAllowed() && changesAllowed(),
+                "features": ["structure", "home-link"], "structure": structureAllowed() && changesAllowed(),
             ], on: connection)
             return
         case ("POST", "/pair"):
