@@ -88,14 +88,12 @@ final class DemoStore: WingmanStore {
     ]
     private(set) var serviceGroups: [ServiceGroup] = [
         ServiceGroup(id: "demo-group-lights", name: "Demo Lights (Synthetic)",
-                     services: [101, 102].map { String(format: "D3E0DE00-0000-4000-8000-%012d-service", $0) }),
+                     services: [101, 102].map { DemoStore.serviceID(of: String(format: "D3E0DE00-0000-4000-8000-%012d", $0)) }),
     ]
     private(set) var scenes: [Scene] = DemoStore.makeScenes()
     private(set) var automations: [Automation] = DemoStore.makeAutomations()
+    /// Counts what the demo creates, so each new room, zone, group or scene gets an id of its own.
     private var created = 0
-    private var addedRooms = 0
-    private var addedZones = 0
-    private var addedGroups = 0
     private(set) var lastSeq = 0
     private(set) var lastEventAt: Date?
     private(set) var lastRefresh: [String: Any]?
@@ -121,12 +119,11 @@ final class DemoStore: WingmanStore {
     // MARK: WingmanStore
 
     func name(of id: String) -> String? {
-        if let accessory = accessories.first(where: { $0.id == id || "\($0.id)-service" == id }) { return accessory.name }
+        if let accessory = accessories.first(where: { $0.id == id || Self.serviceID(of: $0.id) == id }) { return accessory.name }
         let named: [(String, String)] = (rooms + [Self.defaultRoom]).map { ($0.id, $0.name) } + zones.map { ($0.id, $0.name) }
             + serviceGroups.map { ($0.id, $0.name) } + scenes.map { ($0.id, $0.name) } + automations.map { ($0.id, $0.name) }
         return named.first { $0.0 == id }?.1
     }
-
 
     func statusJSON() -> [String: Any] {
         var status: [String: Any] = [
@@ -186,7 +183,8 @@ final class DemoStore: WingmanStore {
         guard let slot = found.match else { return ["error": found.problem ?? "no characteristic \(type)"] }
         let characteristic = target.characteristics[slot]
         if !allowSecurity, Self.securityTypes.contains(characteristic.type) {
-            return ["error": "\(characteristic.description) is a security control; turn on Let bridges operate locks and doors in Wingman's settings"]
+            return ["error": "\(characteristic.description) is a security control; turn on Let bridges operate locks and doors in Wingman's settings",
+                    "setting": "allowSecurity"]
         }
         guard let accepted = Self.coerce(value, to: characteristic) else {
             return ["error": "\(characteristic.description) expects a \(characteristic.format) value"]
@@ -265,7 +263,7 @@ final class DemoStore: WingmanStore {
             "reachable": accessory.reachable, "supportsIdentify": true, "bridged": false, "blocked": false,
             "manufacturer": "Wingman Demo", "model": "Synthetic", "firmware": "1.0", "demo": true,
             "services": [[
-                "id": accessory.id + "-service", "name": accessory.serviceName, "type": accessory.serviceType,
+                "id": Self.serviceID(of: accessory.id), "name": accessory.serviceName, "type": accessory.serviceType,
                 "description": accessory.serviceName, "primary": true,
                 "characteristics": accessory.characteristics.map { characteristic in
                     var json: [String: Any] = [
@@ -424,8 +422,8 @@ extension DemoStore {
                 target = existing
             } else {
                 // Not from the name: a renamed room keeps the id its first name gave it.
-                addedRooms += 1
-                target = Room(id: "demo-room-added-\(addedRooms)", name: room)
+                created += 1
+                target = Room(id: "demo-room-added-\(created)", name: room)
                 rooms.append(target)
                 added = true
             }
@@ -437,8 +435,8 @@ extension DemoStore {
             if let existing = rooms.first(where: { sameRoomName($0.name, name) }) {
                 return .ok(["room": ["id": existing.id, "name": existing.name], "added": false, "demo": true])
             }
-            addedRooms += 1
-            let room = Room(id: "demo-room-added-\(addedRooms)", name: name)
+            created += 1
+            let room = Room(id: "demo-room-added-\(created)", name: name)
             rooms.append(room)
             return .ok(["room": ["id": room.id, "name": room.name], "added": true, "demo": true])
 
@@ -462,8 +460,8 @@ extension DemoStore {
             if let existing = zones.first(where: { sameRoomName($0.name, name) }) {
                 return .ok(["zone": ["id": existing.id, "name": existing.name], "added": false, "demo": true])
             }
-            addedZones += 1
-            let zone = Zone(id: "demo-zone-added-\(addedZones)", name: name, rooms: [])
+            created += 1
+            let zone = Zone(id: "demo-zone-added-\(created)", name: name, rooms: [])
             zones.append(zone)
             return .ok(["zone": ["id": zone.id, "name": zone.name], "added": true, "demo": true])
 
@@ -483,23 +481,21 @@ extension DemoStore {
             if let missing = (add + remove).first(where: { roomID in !rooms.contains { $0.id == roomID } }) {
                 return .notFound("no room \(missing) in \(Self.homeName)")
             }
-            zones[index].rooms.removeAll(where: remove.contains)
-            zones[index].rooms += add.filter { !zones[index].rooms.contains($0) }
+            zones[index].rooms = merged(zones[index].rooms, add: add, remove: remove)
             return .ok(["zone": id, "roomIDs": zones[index].rooms, "demo": true])
 
         case .createGroup(let home, let name, let services):
             guard home == nil || home == Self.homeID else { return .notFound("no home \(home ?? "")") }
             if let missing = services.first(where: { !hasService($0) }) { return .notFound("no service \(missing) in \(Self.homeName)") }
-            // A group with no services left is not in the Home app: its name is free.
-            if serviceGroups.contains(where: { !$0.services.isEmpty && sameRoomName($0.name, name) }) { return .refused("\(Self.homeName) already has a group named \(name)") }
-            addedGroups += 1
-            let group = ServiceGroup(id: "demo-group-added-\(addedGroups)", name: name, services: services)
+            if serviceGroups.contains(where: { groupHoldsName(services: $0.services.count) && sameRoomName($0.name, name) }) { return .refused("\(Self.homeName) already has a group named \(name)") }
+            created += 1
+            let group = ServiceGroup(id: "demo-group-added-\(created)", name: name, services: services)
             serviceGroups.append(group)
             return .ok(["group": ["id": group.id, "name": group.name], "demo": true])
 
         case .renameGroup(let id, let name):
             guard let index = serviceGroups.firstIndex(where: { $0.id == id }) else { return .notFound("no group \(id)") }
-            if serviceGroups.contains(where: { $0.id != id && !$0.services.isEmpty && sameRoomName($0.name, name) }) {
+            if serviceGroups.contains(where: { $0.id != id && groupHoldsName(services: $0.services.count) && sameRoomName($0.name, name) }) {
                 return .refused("\(Self.homeName) already has a group named \(name)")
             }
             serviceGroups[index].name = name
@@ -513,8 +509,7 @@ extension DemoStore {
         case .groupServices(let id, let add, let remove):
             guard let index = serviceGroups.firstIndex(where: { $0.id == id }) else { return .notFound("no group \(id)") }
             if let missing = (add + remove).first(where: { !hasService($0) }) { return .notFound("no service \(missing) in \(Self.homeName)") }
-            serviceGroups[index].services.removeAll(where: remove.contains)
-            serviceGroups[index].services += add.filter { !serviceGroups[index].services.contains($0) }
+            serviceGroups[index].services = merged(serviceGroups[index].services, add: add, remove: remove)
             return .ok(["group": id, "services": serviceGroups[index].services, "demo": true])
 
         case .runScene(let id):
@@ -594,7 +589,8 @@ extension DemoStore {
     }
 
     /// Every demo accessory has one service, its id followed by "-service".
-    private func hasService(_ id: String) -> Bool { accessories.contains { $0.id + "-service" == id } }
+    static func serviceID(of accessory: String) -> String { accessory + "-service" }
+    private func hasService(_ id: String) -> Bool { accessories.contains { Self.serviceID(of: $0.id) == id } }
 
     /// The accessory and characteristic slots an action names, as `write` finds them.
     private func locate(_ action: StructureAction) -> (accessory: Int, slot: Int)? {

@@ -54,7 +54,10 @@ final class ActivityFeed {
         if let file, let data = try? Data(contentsOf: file) {
             let saved = data.split(separator: 0x0A)
             lines = saved.count
-            entries = Array(saved.compactMap { try? Self.decoder.decode(Entry.self, from: Data($0)) }.suffix(limit).reversed())
+            // From the end, only as far back as the feed keeps.
+            for line in saved.reversed() where entries.count < limit {
+                if let entry = try? Self.decoder.decode(Entry.self, from: Data(line)) { entries.append(entry) }
+            }
         }
     }
 
@@ -94,8 +97,7 @@ final class ActivityFeed {
         let fd = Darwin.open(file.path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { Darwin.close(fd) }
-        let written = line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
-        guard written == line.count else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        try Pairing.writeAll(line, to: fd)
     }
 
     private static let encoder: JSONEncoder = {
@@ -112,16 +114,21 @@ final class ActivityFeed {
         return decoder
     }()
 
-    /// The outcome an answer's status line means: 403 is Wingman's settings, any other failure HomeKit's or the request's.
-    static func outcome(status: String, success: Entry.Outcome = .changed) -> Entry.Outcome {
-        status.hasPrefix("2") ? success : status.hasPrefix("403") ? .refused : .failed
+    /// Values `readAll()` could not read.
+    static func failures(inRead result: [String: Any]) -> Int {
+        (result["failures"] as? [String: Int])?.values.reduce(0, +) ?? 0
+    }
+
+    /// A refusal names the switch that refused it (`StoreAnswer.setting`); any other error is HomeKit's or the request's.
+    static func outcome(_ body: [String: Any]) -> Entry.Outcome {
+        body["setting"] != nil ? .refused : body["error"] != nil ? .failed : .changed
     }
 
     /// A written value as the panel shows it: switches read on or off.
     static func describe(_ value: Any) -> String {
         // JSON numbers are NSNumbers, and 1 casts to Bool too: only a JSON true or false is a switch.
         if let number = value as? NSNumber {
-            return CFGetTypeID(number) == CFBooleanGetTypeID() ? (number.boolValue ? "on" : "off") : number.stringValue
+            return StructureValue.isBool(number) ? (number.boolValue ? "on" : "off") : number.stringValue
         }
         return "\(value)"
     }

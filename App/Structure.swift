@@ -17,9 +17,15 @@ struct StoreAnswer {
     }
 
     static var notAdministrator: StoreAnswer { forbidden("only an administrator of the home can change it") }
-    static var turnedOff: StoreAnswer { forbidden("structural edits are turned off in Wingman's settings") }
+    /// Refusals by one of the owner's switches name it in `setting`, so a bridge, and the panel's Activity, can tell
+    /// them from HomeKit's.
+    static func setting(_ key: String, _ message: String) -> StoreAnswer {
+        StoreAnswer(status: "403 Forbidden", body: ["error": message, "setting": key])
+    }
+    static var changesOff: StoreAnswer { setting("allowChanges", "changes are turned off in Wingman's settings") }
+    static var turnedOff: StoreAnswer { setting("allowStructure", "structural edits are turned off in Wingman's settings") }
     static func security(_ name: String) -> StoreAnswer {
-        forbidden("\(name) operates a lock, garage door or alarm; turn on Let bridges operate locks and doors in Wingman's settings")
+        setting("allowSecurity", "\(name) operates a lock, garage door or alarm; turn on Let bridges operate locks and doors in Wingman's settings")
     }
     static func builtIn(_ name: String) -> StoreAnswer {
         refused("\(name) is one of Apple Home's built-in scenes: HomeKit does not rename or delete it")
@@ -203,12 +209,13 @@ enum StructureEdit {
         case "rooms/rename": return .renameRoom(room: try id("room"), name: try name())
         case "accessories/room":
             // `roomID` (null for the Default Room) is the Home Link's form; `room`, a name, the older one.
-            if let roomID = json["roomID"] {
-                if roomID is NSNull { return .assignAccessory(accessory: try id("accessory"), roomID: nil) }
-                guard let roomID = roomID as? String, !roomID.isEmpty else { throw StructureRequestError(#""roomID" is a room's id, or null"#) }
-                return .assignAccessory(accessory: try id("accessory"), roomID: roomID)
+            let accessory = try id("accessory")
+            switch json["roomID"] {
+            case nil: return .moveAccessory(accessory: accessory, room: try name("room"))
+            case is NSNull: return .assignAccessory(accessory: accessory, roomID: nil)
+            case let roomID as String where !roomID.isEmpty: return .assignAccessory(accessory: accessory, roomID: roomID)
+            default: throw StructureRequestError(#""roomID" is a room's id, or null"#)
             }
-            return .moveAccessory(accessory: try id("accessory"), room: try name("room"))
         case "rooms/create": return .createRoom(home: try home(), name: try shortName())
         case "rooms/delete": return .deleteRoom(try id("room"))
         case "zones/create": return .createZone(home: try home(), name: try shortName())
@@ -276,6 +283,17 @@ enum CharacteristicLookup {
 /// Room, zone and group names as HomeKit compares them: "Entrée" is "entree".
 func sameRoomName(_ a: String, _ b: String) -> Bool {
     a.compare(b, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+}
+
+/// A service group with no services left (its accessories removed, or added again under new ids) is not in the Home
+/// app, and real homes keep many: its name is free. Both stores ask this before creating or renaming a group.
+func groupHoldsName(services: Int) -> Bool { services > 0 }
+
+/// A zone's rooms, or a group's services, after an edit: `remove` taken out, then `add` put in once each, in order.
+func merged(_ list: [String], add: [String], remove: [String]) -> [String] {
+    var result = list.filter { !remove.contains($0) }
+    for id in add where !result.contains(id) { result.append(id) }
+    return result
 }
 
 /// Checks a value an action would write against the characteristic's format and range, as HomeKit would.

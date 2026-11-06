@@ -202,6 +202,9 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
     private var applyPort: NSButton?
     private var portCheck: Task<Void, Never>?
     private var renderedBody: NSDictionary?
+    /// The Home tab's activity rows, redrawn on their own: a bridge's request must not rebuild every room.
+    private let activityRows = NSStackView()
+    private var renderedActivity: NSArray?
 
     override func loadView() {
         let root: NSView
@@ -340,12 +343,16 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         switch selectedTab {
         case 1: keys = ["pairingCode", "pairingUntil", "serving", "bridges", "fingerprint", "pairingError", "demo", "demoLog", "demoBusy", "demoPaired"]
         case 2: keys = ["advertise", "advertisementMissing", "allowChanges", "allowSecurity", "allowStructure", "launchAtLogin", "demo", "port", "listening", "settingsError", "automaticUpdateChecks", "updateEnabled", "updateBlocker", "updateStatus", "updateBusy", "updateAvailable", "updateProgress"]
-        default: keys = ["homes", "lastRead", "demo", "offerDemo", "activity"]
+        default: keys = ["homes", "lastRead", "demo", "offerDemo"]
         }
         let content = model.filter { keys.contains($0.key) }
         let signature = NSDictionary(dictionary: ["tab": selectedTab, "rooms": expandedRooms.sorted(), "removal": pendingRemoval ?? "", "content": content])
-        if let renderedBody, renderedBody.isEqual(signature) { return }
+        if let renderedBody, renderedBody.isEqual(signature) {
+            if selectedTab == 0 { renderActivity() }
+            return
+        }
         renderedBody = signature
+        renderedActivity = nil
         let origin = body.enclosingScrollView?.contentView.bounds.origin ?? .zero
         body.arrangedSubviews.forEach { body.removeArrangedSubview($0); $0.removeFromSuperview() }
         port = nil
@@ -358,7 +365,9 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         body.enclosingScrollView?.contentView.scroll(to: origin)
     }
 
-    private func label(_ text: String, small: Bool = false) -> NSTextField {
+    private func label(_ text: String, small: Bool = false) -> NSTextField { Self.label(text, small: small) }
+
+    private static func label(_ text: String, small: Bool = false) -> NSTextField {
         let field = NSTextField(wrappingLabelWithString: text)
         field.translatesAutoresizingMaskIntoConstraints = false
         field.font = .systemFont(ofSize: small ? 11 : 13)
@@ -577,19 +586,31 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         }
     }
 
-    /// What paired bridges asked for, newest first: one line each, a failure's reason on two.
+    /// What paired bridges asked for, newest first (the bridge sends the latest few): one line each, a failure's
+    /// reason on two.
     private func activity() {
         section("Activity")
-        let entries = model["activity"] as? [[String: Any]] ?? []
-        if entries.isEmpty {
-            add(label("Nothing yet. What paired bridges change in your home shows here.", small: true))
-            return
-        }
-        for entry in entries.prefix(Self.activityRows) { add(Self.activityRow(entry), verticalPadding: 3) }
+        activityRows.orientation = .vertical
+        activityRows.alignment = .leading
+        activityRows.spacing = 0
+        body.addArrangedSubview(activityRows)
+        activityRows.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        renderActivity()
     }
 
-    /// The latest few: enough to see what a bridge just did without pushing the rooms out of the panel.
-    static let activityRows = 8
+    private func renderActivity() {
+        let entries = model["activity"] as? [[String: Any]] ?? []
+        let signature = entries as NSArray
+        if let renderedActivity, renderedActivity.isEqual(signature) { return }
+        renderedActivity = signature
+        activityRows.arrangedSubviews.forEach { activityRows.removeArrangedSubview($0); $0.removeFromSuperview() }
+        let rows = entries.isEmpty ? [Self.label("Nothing yet. What paired bridges change in your home shows here.", small: true)] : entries.map(Self.activityRow)
+        for row in rows {
+            let wrapper = padded(row, top: entries.isEmpty ? 6 : 3, bottom: entries.isEmpty ? 6 : 3)
+            activityRows.addArrangedSubview(wrapper)
+            wrapper.widthAnchor.constraint(equalTo: activityRows.widthAnchor).isActive = true
+        }
+    }
 
     /// A shape as well as a colour, so the outcome reads without telling green from orange.
     static func activityStatus(_ outcome: String) -> (symbol: String, color: NSColor, label: String) {
@@ -608,12 +629,12 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         mark.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
         mark.contentTintColor = status.color
         mark.widthAnchor.constraint(equalToConstant: 10).isActive = true
-        let title = NSTextField(labelWithString: entry["title"] as? String ?? "")
-        title.font = .systemFont(ofSize: 11)
+        let title = label(entry["title"] as? String ?? "", small: true)
+        title.textColor = .labelColor
+        title.maximumNumberOfLines = 1
         title.lineBreakMode = .byTruncatingTail
         title.widthAnchor.constraint(equalToConstant: 118).isActive = true
-        let summary = NSTextField(wrappingLabelWithString: entry["summary"] as? String ?? "")
-        summary.font = .systemFont(ofSize: 11)
+        let summary = label(entry["summary"] as? String ?? "", small: true)
         // A refusal or failure is the one summary worth a second line.
         let trouble = outcome == "refused" || outcome == "failed"
         summary.textColor = trouble ? .labelColor : .panelSecondary

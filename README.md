@@ -159,7 +159,9 @@ it cannot set, a value outside its format or range, or one characteristic twice)
 does not administer the home, or a lock, garage door or alarm without **Let bridges operate locks and doors**, unless
 the action is one the scene already has, sent back unchanged), `404`
 (no such room, scene, automation or home) or `422` (HomeKit refused, with its `HMErrorDomain` code; `done` counts the
-changes made before it: HomeKit has no transaction). Every action is checked before anything changes.
+changes made before it: HomeKit has no transaction). Every action is checked before anything changes. A refusal by
+one of Wingman's switches names it in `setting` (`allowChanges`, `allowStructure` or `allowSecurity`), as does a
+`/write` refused for a lock, garage door or alarm, so a bridge can say which switch to turn on.
 
 - **Scenes:** `{"id", "home", "name", "type", "builtIn", "executing", "actions", "unsupported"}`. `type` is `user`,
   `wakeUp`, `sleep`, `homeArrival` or `homeDeparture`; the four built-in ones can be run and their actions changed, not

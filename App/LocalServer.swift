@@ -409,18 +409,20 @@ final class LocalServer {
             clients[ObjectIdentifier(connection)]?.work = Task {
                 guard !Task.isCancelled, pairing.contains(bridge.id) else { close(connection); return }
                 let result = await store.readAll()
-                let failures = (result["failures"] as? [String: Int])?.values.reduce(0, +) ?? 0
+                let failures = ActivityFeed.failures(inRead: result)
                 note(bridge.name, "Read all values", "\(result["succeeded"] ?? 0) read" + (failures > 0 ? ", \(failures) failed" : ""),
                      failures > 0 ? .failed : .read, since: started)
                 send(result, on: connection)
             }
         case ("POST", "/write"):
             guard changesAllowed() else {
-                note(bridge.name, "Changed accessory", "changes are turned off in Wingman's settings", .refused, since: started)
-                send(["error": "changes are turned off in Wingman's settings"], status: "403 Forbidden", on: connection)
+                let refusal = StoreAnswer.changesOff
+                note(bridge.name, "Changed accessory", about: store.name(of: request(body)?["accessory"] as? String ?? "") ?? "An accessory",
+                     answer: refusal.body, since: started)
+                send(refusal.body, status: refusal.status, on: connection)
                 return
             }
-            guard let request = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+            guard let request = request(body),
                   let accessory = request["accessory"] as? String, let characteristic = request["characteristic"] as? String,
                   let value = request["value"]
             else {
@@ -433,12 +435,9 @@ final class LocalServer {
                                                allowSecurity: securityAllowed())
                 let target = result["accessory"] as? String ?? store.name(of: accessory) ?? accessory
                 let what = result["characteristic"] as? String ?? characteristic
-                if let error = result["error"] as? String {
-                    // A security control refused by Wingman's setting reads as a refusal, not as HomeKit failing.
-                    note(bridge.name, "Changed accessory", "\(target): \(error)", error.contains("Wingman's settings") ? .refused : .failed, since: started)
-                } else {
-                    note(bridge.name, "Changed accessory", "\(target): \(what) → \(ActivityFeed.describe(result["written"] ?? value))", .changed, since: started)
-                }
+                note(bridge.name, "Changed accessory",
+                     about: result["error"] == nil ? "\(target): \(what) → \(ActivityFeed.describe(result["written"] ?? value))" : target,
+                     answer: result, since: started)
                 send(result, status: result["error"] == nil ? "200 OK" : "422 Unprocessable Content", on: connection)
             }
         case ("GET", "/scenes"): send(["scenes": store.scenesJSON()], on: connection)
@@ -455,16 +454,15 @@ final class LocalServer {
             // Named now: a deleted room has no name once the edit ran.
             let described = edit.activity { self.store.name(of: $0) }
             guard allowed() else {
-                let refusal = changesAllowed() ? StoreAnswer.turnedOff : .forbidden("changes are turned off in Wingman's settings")
-                note(bridge.name, described.title, "\(described.summary) · \(refusal.body["error"] ?? "")", .refused, since: started)
+                let refusal = changesAllowed() ? StoreAnswer.turnedOff : .changesOff
+                note(bridge.name, described.title, about: described.summary, answer: refusal.body, since: started)
                 send(refusal.body, status: refusal.status, on: connection)
                 return
             }
             clients[ObjectIdentifier(connection)]?.work = Task {
                 guard !Task.isCancelled, pairing.contains(bridge.id), allowed() else { close(connection); return }
                 let answer = await store.edit(edit, allowSecurity: securityAllowed())
-                let summary = answer.body["error"].map { "\(described.summary) · \($0)" } ?? described.summary
-                note(bridge.name, described.title, summary, ActivityFeed.outcome(status: answer.status), since: started)
+                note(bridge.name, described.title, about: described.summary, answer: answer.body, since: started)
                 send(answer.body, status: answer.status, on: connection)
             }
         default: send(["error": "not found"], status: "404 Not Found", on: connection)
@@ -491,6 +489,14 @@ final class LocalServer {
         }
         return query
     }
+
+    /// What a request was about and how it was answered: an error follows the summary, and decides the outcome.
+    private func note(_ bridge: String, _ title: String, about summary: String, answer: [String: Any], since started: Date) {
+        let reason = answer["error"].map { " · \($0)" } ?? ""
+        note(bridge, title, summary + reason, ActivityFeed.outcome(answer), since: started)
+    }
+
+    private func request(_ body: Data) -> [String: Any]? { (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] }
 
     private func note(_ bridge: String, _ title: String, _ summary: String, _ outcome: ActivityFeed.Entry.Outcome, since started: Date) {
         activity.record(.init(date: started, bridge: bridge, title: title, summary: summary, outcome: outcome,

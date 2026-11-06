@@ -359,18 +359,18 @@ extension HomeStore {
             guard let (home, zone) = zone(id) else { return .notFound("no zone \(id)") }
             guard isAdministrator(home) else { return .notAdministrator }
             // Every id found before anything changes; the Default Room is in no zone.
-            if let missing = (add + remove).first(where: { roomID in !home.rooms.contains { $0.uniqueIdentifier.uuidString == roomID } }) {
-                return .notFound("no room \(missing) in \(home.name)")
-            }
-            let adding = add.compactMap { roomID in home.rooms.first { $0.uniqueIdentifier.uuidString == roomID } }
-            let removing = remove.compactMap { roomID in home.rooms.first { $0.uniqueIdentifier.uuidString == roomID } }
+            let rooms = Self.byID(home.rooms)
+            if let missing = (add + remove).first(where: { rooms[$0] == nil }) { return .notFound("no room \(missing) in \(home.name)") }
+            var current = Set(zone.rooms)
             var done = 0
-            for room in removing where zone.rooms.contains(room) {
+            for room in remove.compactMap({ rooms[$0] }) where current.contains(room) {
                 if let error = await Self.homeKit({ zone.removeRoom(room, completionHandler: $0) }) { return .refused(Self.describe(error), done: done) }
+                current.remove(room)
                 done += 1
             }
-            for room in adding where !zone.rooms.contains(room) {
+            for room in add.compactMap({ rooms[$0] }) where !current.contains(room) {
                 if let error = await Self.homeKit({ zone.addRoom(room, completionHandler: $0) }) { return .refused(Self.describe(error), done: done) }
+                current.insert(room)
                 done += 1
             }
             return .ok(["zone": id, "roomIDs": zone.rooms.map(\.uniqueIdentifier.uuidString)])
@@ -379,13 +379,10 @@ extension HomeStore {
             let (found, refusal) = groupHome(homeID, serviceIDs)
             guard let home = found else { return refusal ?? .notFound("no home") }
             guard isAdministrator(home) else { return .notAdministrator }
-            var services: [HMService] = []
-            for serviceID in serviceIDs {
-                guard let service = service(serviceID, in: home) else { return .notFound("no service \(serviceID) in \(home.name)") }
-                services.append(service)
-            }
-            // A group with no services left (its accessories re-added under new ids) is not in the Home app: its name is free.
-            if home.serviceGroups.contains(where: { !$0.services.isEmpty && sameRoomName($0.name, name) }) { return .refused("\(home.name) already has a group named \(name)") }
+            let all = Self.services(of: home)
+            if let missing = serviceIDs.first(where: { all[$0] == nil }) { return .notFound("no service \(missing) in \(home.name)") }
+            let services = serviceIDs.compactMap { all[$0] }
+            if home.serviceGroups.contains(where: { groupHoldsName(services: $0.services.count) && sameRoomName($0.name, name) }) { return .refused("\(home.name) already has a group named \(name)") }
             let (created, error) = await Self.addServiceGroup(name, to: home)
             guard let group = created else { return .refused(error.map(Self.describe) ?? "HomeKit added no group") }
             for service in services {
@@ -400,7 +397,7 @@ extension HomeStore {
         case .renameGroup(let id, let name):
             guard let (home, group) = group(id) else { return .notFound("no group \(id)") }
             guard isAdministrator(home) else { return .notAdministrator }
-            if home.serviceGroups.contains(where: { $0 != group && !$0.services.isEmpty && sameRoomName($0.name, name) }) {
+            if home.serviceGroups.contains(where: { $0 != group && groupHoldsName(services: $0.services.count) && sameRoomName($0.name, name) }) {
                 return .refused("\(home.name) already has a group named \(name)")
             }
             if let error = await Self.homeKit({ group.updateName(name, completionHandler: $0) }) { return .refused(Self.describe(error)) }
@@ -415,18 +412,18 @@ extension HomeStore {
         case .groupServices(let id, let add, let remove):
             guard let (home, group) = group(id) else { return .notFound("no group \(id)") }
             guard isAdministrator(home) else { return .notAdministrator }
-            if let missing = (add + remove).first(where: { service($0, in: home) == nil }) {
-                return .notFound("no service \(missing) in \(home.name)")
-            }
-            let adding = add.compactMap { service($0, in: home) }
-            let removing = remove.compactMap { service($0, in: home) }
+            let all = Self.services(of: home)
+            if let missing = (add + remove).first(where: { all[$0] == nil }) { return .notFound("no service \(missing) in \(home.name)") }
+            var current = Set(group.services)
             var done = 0
-            for service in removing where group.services.contains(service) {
+            for service in remove.compactMap({ all[$0] }) where current.contains(service) {
                 if let error = await Self.homeKit({ group.removeService(service, completionHandler: $0) }) { return .refused(Self.describe(error), done: done) }
+                current.remove(service)
                 done += 1
             }
-            for service in adding where !group.services.contains(service) {
+            for service in add.compactMap({ all[$0] }) where !current.contains(service) {
                 if let error = await Self.homeKit({ group.addService(service, completionHandler: $0) }) { return .refused(Self.describe(error), done: done) }
+                current.insert(service)
                 done += 1
             }
             return .ok(["group": id, "services": group.services.map(\.uniqueIdentifier.uuidString)])
@@ -573,6 +570,30 @@ extension HomeStore {
     private func group(_ id: String) -> (HMHome, HMServiceGroup)? {
         for home in homes {
             if let group = home.serviceGroups.first(where: { $0.uniqueIdentifier.uuidString == id }) { return (home, group) }
+        }
+        return nil
+    }
+
+    /// HomeKit objects by id string, for an edit that names several: each id is found once.
+    private static func byID<T: Identified>(_ objects: [T]) -> [String: T] {
+        Dictionary(objects.map { ($0.uniqueIdentifier.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private static func services(of home: HMHome) -> [String: HMService] { byID(home.accessories.flatMap(\.services)) }
+
+    /// For the panel's Activity: what an id names, found as the edits find it, services last since they are the most.
+    func name(of id: String) -> String? {
+        if let (_, accessory) = accessory(id) { return accessory.name }
+        if let (_, room) = room(id) { return room.name }
+        if let home = homes.first(where: { $0.roomForEntireHome().uniqueIdentifier.uuidString == id }) { return home.roomForEntireHome().name }
+        if let (_, zone) = zone(id) { return zone.name }
+        if let (_, group) = group(id) { return group.name }
+        if let (_, set) = scene(id) { return set.name }
+        if let (_, trigger) = trigger(id) { return trigger.name }
+        for home in homes {
+            guard let service = service(id, in: home) else { continue }
+            // A light's service is often named as the light: say the accessory once.
+            return service.accessory.map { $0.name == service.name ? $0.name : "\($0.name) \(service.name)" } ?? service.name
         }
         return nil
     }
@@ -763,6 +784,7 @@ extension HomeStore {
         await withCheckedContinuation { continuation in call { error in continuation.resume(returning: error) } }
     }
 
+    // One per kind, not one generic: Swift 6 cannot prove a generic hands HomeKit's non-Sendable object over safely.
     private static func addRoom(_ name: String, to home: HMHome) async -> (HMRoom?, Error?) {
         await withCheckedContinuation { continuation in
             home.addRoom(withName: name) { room, error in continuation.resume(returning: (room, error)) }
@@ -787,3 +809,8 @@ extension HomeStore {
         }
     }
 }
+
+/// A HomeKit object found by its id: HomeKit's classes share the property, not a protocol.
+protocol Identified { var uniqueIdentifier: UUID { get } }
+extension HMRoom: Identified {}
+extension HMService: Identified {}

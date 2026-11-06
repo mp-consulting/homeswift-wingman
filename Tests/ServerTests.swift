@@ -562,13 +562,7 @@ func expect(_ condition: Bool, _ message: String) throws {
     @MainActor static func structureRoutes(port: UInt16, token: String, store: FakeStore, allow: (Bool) -> Void,
                                            allowChanges: (Bool) -> Void) async throws {
         func request(_ method: String, _ path: String, _ body: String = "") async throws -> (status: String, json: [String: Any]) {
-            let client = TestClient(port: port, request: "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \(token)\r\n"
-                + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)")
-            try await eventually("\(method) \(path) response") { client.ended }
-            let parts = client.text.components(separatedBy: "\r\n\r\n")
-            let status = parts.first?.components(separatedBy: "\r\n").first ?? ""
-            let json = (try? JSONSerialization.jsonObject(with: Data((parts.dropFirst().first ?? "").utf8))) as? [String: Any] ?? [:]
-            return (status, json)
+            try await ServerTests.request(port: port, token: token, method, path, body)
         }
         let info = try await request("GET", "/info")
         try expect(info.json["features"] as? [String] == ["structure", "home-link"] && info.json["structure"] as? Bool == false && info.json["api"] as? String == "1",
@@ -603,8 +597,6 @@ func expect(_ condition: Bool, _ message: String) throws {
         print("PASS: structure routes, the owner's setting and request validation over loopback")
     }
 
-    /// The Home Link's reads and edits through the server, on the demo home: the same settings gate them as the other
-    /// edits, and a bridge sees each one as a homes event. Loopback without TLS, as `network`: TLS needs the keychain.
     @MainActor static func activityFile() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -635,6 +627,19 @@ func expect(_ condition: Bool, _ message: String) throws {
         print("PASS: the activity feed is appended to a file a relaunch reads, owner-only, kept small, a cut line skipped")
     }
 
+    /// One authorised request over loopback, its status line and JSON body.
+    @MainActor static func request(port: UInt16, token: String, _ method: String, _ path: String, _ body: String) async throws -> (status: String, json: [String: Any]) {
+        let client = TestClient(port: port, request: "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \(token)\r\n"
+            + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)")
+        try await eventually("\(method) \(path) response") { client.ended }
+        let parts = client.text.components(separatedBy: "\r\n\r\n")
+        let status = parts.first?.components(separatedBy: "\r\n").first ?? ""
+        let json = (try? JSONSerialization.jsonObject(with: Data((parts.dropFirst().first ?? "").utf8))) as? [String: Any] ?? [:]
+        return (status, json)
+    }
+
+    /// The Home Link's reads and edits through the server, on the demo home: the same settings gate them as the other
+    /// edits, and a bridge sees each one as a homes event. Loopback without TLS, as `network`: TLS needs the keychain.
     @MainActor static func homeLinkRoutes() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -655,13 +660,7 @@ func expect(_ condition: Bool, _ message: String) throws {
         try await eventually("listener ready") { server.state == "listening" }
         let port = server.boundPort!
         func request(_ method: String, _ path: String, _ body: String = "") async throws -> (status: String, json: [String: Any]) {
-            let client = TestClient(port: port, request: "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \(token)\r\n"
-                + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)")
-            try await eventually("\(method) \(path) response") { client.ended }
-            let parts = client.text.components(separatedBy: "\r\n\r\n")
-            let status = parts.first?.components(separatedBy: "\r\n").first ?? ""
-            let json = (try? JSONSerialization.jsonObject(with: Data((parts.dropFirst().first ?? "").utf8))) as? [String: Any] ?? [:]
-            return (status, json)
+            try await ServerTests.request(port: port, token: token, method, path, body)
         }
         try expect((try await request("GET", "/info")).json["features"] as? [String] == ["structure", "home-link"], "info lists home-link")
         let homes = try await request("GET", "/homes")
@@ -673,11 +672,11 @@ func expect(_ condition: Bool, _ message: String) throws {
         try expect((home["accessories"] as? [[String: Any]])?.first { $0["id"] as? String == lamp }?["roomID"] is String, "and each accessory's room id")
 
         let off = try await request("POST", "/rooms/create", #"{"name": "Demo Attic"}"#)
-        try expect(off.status.contains("403") && demo.rooms.count == 4, "a Home Link edit needs the structure setting")
+        try expect(off.status.contains("403") && demo.rooms.count == 4 && off.json["setting"] as? String == "allowStructure", "a Home Link edit needs the structure setting, named")
         structure = true
         changes = false
         let readOnly = try await request("POST", "/zones/create", #"{"name": "Demo Attic"}"#)
-        try expect(readOnly.status.contains("403") && demo.zones.count == 2, "and changes")
+        try expect(readOnly.status.contains("403") && demo.zones.count == 2 && readOnly.json["setting"] as? String == "allowChanges", "and changes")
         changes = true
         let since = demo.lastSeq
         let created = try await request("POST", "/rooms/create", #"{"name": "Demo Attic"}"#)

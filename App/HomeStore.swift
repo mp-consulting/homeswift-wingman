@@ -129,20 +129,6 @@ final class HomeStore: NSObject, WingmanStore {
 
     func settingsChanged() { appendStructureEvent("settings", home: "", accessory: "") }
 
-    func name(of id: String) -> String? {
-        for home in homes {
-            if let accessory = home.accessories.first(where: { $0.uniqueIdentifier.uuidString == id }) { return accessory.name }
-            if let service = home.accessories.flatMap(\.services).first(where: { $0.uniqueIdentifier.uuidString == id }) {
-                return service.accessory.map { $0.name == service.name ? $0.name : "\($0.name) \(service.name)" } ?? service.name
-            }
-            let named: [(UUID, String)] = (home.rooms + [home.roomForEntireHome()]).map { ($0.uniqueIdentifier, $0.name) }
-                + home.zones.map { ($0.uniqueIdentifier, $0.name) } + home.serviceGroups.map { ($0.uniqueIdentifier, $0.name) }
-                + home.actionSets.map { ($0.uniqueIdentifier, $0.name) } + home.triggers.map { ($0.uniqueIdentifier, $0.name) }
-            if let found = named.first(where: { $0.0.uuidString == id }) { return found.1 }
-        }
-        return nil
-    }
-
     private func appendStructureEvent(_ kind: String, home: String, accessory: String) {
         lastSeq += 1
         append(Event(
@@ -234,7 +220,8 @@ final class HomeStore: NSObject, WingmanStore {
         let found = Self.writableCharacteristic(of: target, named: type)
         guard let characteristic = found.match else { return ["error": found.problem ?? "no characteristic \(type)"] }
         if !allowSecurity, Self.securityTypes.contains(characteristic.characteristicType) {
-            return ["error": "\(characteristic.localizedDescription) is a security control; turn on Let bridges operate locks and doors in Wingman's settings"]
+            return ["error": "\(characteristic.localizedDescription) is a security control; turn on Let bridges operate locks and doors in Wingman's settings",
+                    "setting": "allowSecurity"]
         }
         let started = Date()
         let error: Error? = await withCheckedContinuation { continuation in
@@ -278,24 +265,27 @@ final class HomeStore: NSObject, WingmanStore {
 
     func homesJSON() -> [[String: Any]] {
         homes.map { home in
+            // Each HomeKit property read copies: read once here.
             let defaultRoom = home.roomForEntireHome()
-            let roomNames = Dictionary(uniqueKeysWithValues: (home.rooms + [defaultRoom]).map { ($0.uniqueIdentifier, $0.name) })
-            let roomIDs = Set(home.rooms.map(\.uniqueIdentifier))
+            let rooms = home.rooms
+            let roomNames = Dictionary(uniqueKeysWithValues: (rooms + [defaultRoom]).map { ($0.uniqueIdentifier, $0.name) })
+            let roomIDs = Set(rooms.map(\.uniqueIdentifier))
             return [
                 "id": home.uniqueIdentifier.uuidString,
                 "name": home.name,
                 "primary": home.isPrimary,
                 // HomeKit refuses structural edits from a user who does not administer the home.
                 "editable": isAdministrator(home),
-                "rooms": home.rooms.map { room in
+                "rooms": rooms.map { room in
                     ["id": room.uniqueIdentifier.uuidString, "name": room.name, "accessories": room.accessories.count] as [String: Any]
                 },
                 // Where accessories in no room are: never one of `rooms`, and an accessory's `roomID` there is null.
                 "defaultRoom": ["id": defaultRoom.uniqueIdentifier.uuidString, "name": defaultRoom.name],
                 "zones": home.zones.map { zone in
-                    [
-                        "id": zone.uniqueIdentifier.uuidString, "name": zone.name, "rooms": zone.rooms.map(\.name),
-                        "roomIDs": zone.rooms.map(\.uniqueIdentifier.uuidString),
+                    let zoneRooms = zone.rooms
+                    return [
+                        "id": zone.uniqueIdentifier.uuidString, "name": zone.name, "rooms": zoneRooms.map(\.name),
+                        "roomIDs": zoneRooms.map(\.uniqueIdentifier.uuidString),
                     ] as [String: Any]
                 },
                 "serviceGroups": home.serviceGroups.map { group in
@@ -309,8 +299,9 @@ final class HomeStore: NSObject, WingmanStore {
                 },
                 "accessories": home.accessories.map { accessory in
                     // HomeKit gives an accessory in no room the Default Room: recognised as the one not in `rooms`.
-                    let roomID: Any = accessory.room.flatMap { roomIDs.contains($0.uniqueIdentifier) ? $0.uniqueIdentifier.uuidString : nil } ?? NSNull()
-                    var json = accessoryJSON(accessory, room: accessory.room.flatMap { roomNames[$0.uniqueIdentifier] })
+                    let room = accessory.room
+                    let roomID: Any = room.flatMap { roomIDs.contains($0.uniqueIdentifier) ? $0.uniqueIdentifier.uuidString : nil } ?? NSNull()
+                    var json = accessoryJSON(accessory, room: room.flatMap { roomNames[$0.uniqueIdentifier] })
                     json["roomID"] = roomID
                     return json
                 },

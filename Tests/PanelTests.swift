@@ -124,6 +124,11 @@ import AppKit
         try expect(rows.first?.hasPrefix("Changed: Changed accessory, Floor Lamp: Power State → on") == true
                    && rows.contains { $0.hasPrefix("Refused: Renamed room") } && rows.contains { $0.hasPrefix("Failed: Changed accessory") }
                    && rows.contains { $0.hasPrefix("Read: Read all values") }, "each row says its outcome in words: \(rows.first ?? "")")
+        let roomButton = PanelFixtures.descendants(panel.view).first { $0.identifier?.rawValue == "room:living" }
+        panel.model["activity"] = [["date": Date().timeIntervalSince1970, "bridge": "Demo Bridge", "title": "Ran scene", "summary": "Demo Night",
+                                    "outcome": "changed", "milliseconds": 80]] + PanelFixtures.activity
+        try expect(roomButton != nil && PanelFixtures.descendants(panel.view).first { $0.identifier?.rawValue == "room:living" } === roomButton
+                   && text("Demo Night"), "a new activity row leaves the rooms as they are")
         var quiet = PanelFixtures.model
         quiet["activity"] = [[String: Any]]()
         panel.model = quiet
