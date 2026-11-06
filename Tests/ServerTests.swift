@@ -497,6 +497,13 @@ func expect(_ condition: Bool, _ message: String) throws {
         try expect(members.body["services"] as? [String] == ["\(ceiling)-service", "\(lamp)-service"], "services added and removed")
         try expect(try await edit("groups/services", #"{"group": "\#(kitchenID)", "add": ["nope"]}"#).status.hasPrefix("404")
                    && group(kitchenID)["services"] as? [String] == ["\(ceiling)-service", "\(lamp)-service"], "an unknown service refuses the whole change")
+        // A group left with no services is not in the Home app, so its name is free (real homes keep such groups).
+        _ = try await edit("groups/services", #"{"group": "\#(kitchenID)", "remove": ["\#(ceiling)-service", "\#(lamp)-service"]}"#)
+        let reused = try await edit("groups/create", #"{"name": "Demo Counter (Synthetic)", "services": ["\#(ceiling)-service"]}"#)
+        try expect(reused.status.hasPrefix("200") && group(kitchenID)["services"] as? [String] == [], "an empty group's name is free")
+        try expect(try await edit("groups/rename", #"{"group": "\#(id(reused, "group"))", "name": "Demo Lights (Synthetic)"}"#).status.hasPrefix("422"),
+                   "a rename still refuses a group with services")
+        _ = try await edit("groups/delete", #"{"group": "\#(id(reused, "group"))"}"#)
         try expect(try await edit("groups/delete", #"{"group": "\#(kitchenID)"}"#).body["group"] as? String == kitchenID && group(kitchenID).isEmpty, "a group deleted")
         for (path, body) in [("groups/delete", #"{"group": "\#(kitchenID)"}"#), ("groups/rename", #"{"group": "nope", "name": "X"}"#),
                              ("groups/services", #"{"group": "nope", "add": []}"#)] {

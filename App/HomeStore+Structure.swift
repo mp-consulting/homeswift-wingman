@@ -384,7 +384,8 @@ extension HomeStore {
                 guard let service = service(serviceID, in: home) else { return .notFound("no service \(serviceID) in \(home.name)") }
                 services.append(service)
             }
-            if home.serviceGroups.contains(where: { sameRoomName($0.name, name) }) { return .refused("\(home.name) already has a group named \(name)") }
+            // A group with no services left (its accessories re-added under new ids) is not in the Home app: its name is free.
+            if home.serviceGroups.contains(where: { !$0.services.isEmpty && sameRoomName($0.name, name) }) { return .refused("\(home.name) already has a group named \(name)") }
             let (created, error) = await Self.addServiceGroup(name, to: home)
             guard let group = created else { return .refused(error.map(Self.describe) ?? "HomeKit added no group") }
             for service in services {
@@ -399,7 +400,7 @@ extension HomeStore {
         case .renameGroup(let id, let name):
             guard let (home, group) = group(id) else { return .notFound("no group \(id)") }
             guard isAdministrator(home) else { return .notAdministrator }
-            if home.serviceGroups.contains(where: { $0 != group && sameRoomName($0.name, name) }) {
+            if home.serviceGroups.contains(where: { $0 != group && !$0.services.isEmpty && sameRoomName($0.name, name) }) {
                 return .refused("\(home.name) already has a group named \(name)")
             }
             if let error = await Self.homeKit({ group.updateName(name, completionHandler: $0) }) { return .refused(Self.describe(error)) }

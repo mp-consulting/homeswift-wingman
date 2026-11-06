@@ -482,7 +482,8 @@ extension DemoStore {
         case .createGroup(let home, let name, let services):
             guard home == nil || home == Self.homeID else { return .notFound("no home \(home ?? "")") }
             if let missing = services.first(where: { !hasService($0) }) { return .notFound("no service \(missing) in \(Self.homeName)") }
-            if serviceGroups.contains(where: { sameRoomName($0.name, name) }) { return .refused("\(Self.homeName) already has a group named \(name)") }
+            // A group with no services left is not in the Home app: its name is free.
+            if serviceGroups.contains(where: { !$0.services.isEmpty && sameRoomName($0.name, name) }) { return .refused("\(Self.homeName) already has a group named \(name)") }
             addedGroups += 1
             let group = ServiceGroup(id: "demo-group-added-\(addedGroups)", name: name, services: services)
             serviceGroups.append(group)
@@ -490,7 +491,7 @@ extension DemoStore {
 
         case .renameGroup(let id, let name):
             guard let index = serviceGroups.firstIndex(where: { $0.id == id }) else { return .notFound("no group \(id)") }
-            if serviceGroups.contains(where: { $0.id != id && sameRoomName($0.name, name) }) {
+            if serviceGroups.contains(where: { $0.id != id && !$0.services.isEmpty && sameRoomName($0.name, name) }) {
                 return .refused("\(Self.homeName) already has a group named \(name)")
             }
             serviceGroups[index].name = name
