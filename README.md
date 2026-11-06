@@ -56,7 +56,11 @@ paired bridges and removes one.
 The menu bar item shows the headline, the homes and the pairing code. **Open Wingman…** (⌘,) opens its window, after
 apple-mail-mcp's menu bar panel: SwiftUI with Liquid Glass on macOS 26, three tabs.
 
-- **Home:** the rooms and their accessories, those not responding, the value changes received, **Read All**.
+- **Home:** the activity, then the rooms and their accessories, those not responding, the value changes received,
+  **Read All**. The activity is what paired bridges asked for (pairing, Read All, accessory changes, scene runs and
+  edits to rooms, zones, groups, scenes and automations), the latest eight, each with whether it was made, refused by
+  Wingman's settings or failed, and why. The reads bridges make all the time are left out. The last 100 are kept in
+  `activity.jsonl` beside the pairings, so a relaunch keeps them.
 - **Bridges:** the pairing code with its countdown, the paired bridges (Remove), the certificate's fingerprint.
 - **Settings:** advertise over Bonjour, the port (8619), whether paired bridges may change accessories, operate locks
   and doors, or edit rooms, scenes and automations, open at login. Each switch says under it what bridges cannot do
@@ -105,7 +109,7 @@ curl -sk https://127.0.0.1:8619/info # id, version, certificate fingerprint, whe
 curl -sk https://127.0.0.1:8619/pair -d '{"code": "123456", "name": "My bridge"}'   # → {"token", …}
 H="Authorization: Bearer <token>"
 curl -sk -H "$H" https://127.0.0.1:8619/status        # authorization, counts, events received, last read
-curl -sk -H "$H" https://127.0.0.1:8619/homes         # homes → rooms, zones, scenes, accessories → services → characteristics
+curl -sk -H "$H" https://127.0.0.1:8619/homes         # homes → rooms, zones, service groups, scenes, accessories → services → characteristics
 curl -sk -H "$H" https://127.0.0.1:8619/events        # the latest value changes HomeKit pushed, newest first
 curl -sk -H "$H" "https://127.0.0.1:8619/events?since=42&wait=25"   # those after seq 42, waiting up to 25 s for one
 curl -sk -H "$H" -X POST https://127.0.0.1:8619/read  # reads every readable value; failures grouped by error
@@ -155,7 +159,9 @@ it cannot set, a value outside its format or range, or one characteristic twice)
 does not administer the home, or a lock, garage door or alarm without **Let bridges operate locks and doors**, unless
 the action is one the scene already has, sent back unchanged), `404`
 (no such room, scene, automation or home) or `422` (HomeKit refused, with its `HMErrorDomain` code; `done` counts the
-changes made before it: HomeKit has no transaction). Every action is checked before anything changes.
+changes made before it: HomeKit has no transaction). Every action is checked before anything changes. A refusal by
+one of Wingman's switches names it in `setting` (`allowChanges`, `allowStructure` or `allowSecurity`), as does a
+`/write` refused for a lock, garage door or alarm, so a bridge can say which switch to turn on.
 
 - **Scenes:** `{"id", "home", "name", "type", "builtIn", "executing", "actions", "unsupported"}`. `type` is `user`,
   `wakeUp`, `sleep`, `homeArrival` or `homeDeparture`; the four built-in ones can be run and their actions changed, not
@@ -178,8 +184,41 @@ changes made before it: HomeKit has no transaction). Every action is checked bef
 - **Own actions:** HomeKit's API cannot give an automation actions of its own; `/automations/actions` changes those it
   has, and refuses to add some to one that has none.
 - **Events:** `scenes` and `automations` events say those changed (in the Home app or through Wingman), `homes`
-  covers rooms and accessories' rooms, and `settings` says the owner turned the edits on or off: the bridge asks
-  `/info` again. Like `homes`, they are coalesced over a second and name no characteristic.
+  covers rooms, zones, service groups, service names and accessories' rooms, and `settings` says the owner turned
+  the edits or changes on or off: the bridge asks `/info` again. Like `homes`, they are coalesced over a second for
+  each home and name no characteristic.
+
+## The Home Link
+
+`GET /info` also lists `"home-link"` in `features`: Wingman serves the Home's rooms, zones and service groups by
+HomeKit id, so a Homeswift bridge can keep a linked copy of them. Each home in `/homes` gains, besides what it had:
+
+- `defaultRoom`: `{"id", "name"}`, HomeKit's room for the entire home, where accessories in no room are. `rooms`
+  still leaves it out.
+- every accessory's `roomID`: its room's id, or `null` in the Default Room (`room`, the name, stays).
+- every zone's `id` and `roomIDs` (`name` and `rooms`, the names, stay).
+- `serviceGroups`: `[{"id", "name", "services": [id]}]`, the service ids being those of `services[].id`.
+
+The edits are structural, like the others: they need both settings and a user who administers the home.
+
+| Method and path | Body | Answers |
+|---|---|---|
+| `POST /rooms/create` | `{"name", "home"?}` | `{"room": {"id", "name"}, "added"}`: a room already named so (case and accents aside) is answered with `"added": false` |
+| `POST /rooms/delete` | `{"room"}` | `{"room"}`; its accessories go to the Default Room |
+| `POST /accessories/room` | `{"accessory", "roomID": id or null}` | `{"accessory", "roomID"}`; `null` (or the Default Room's id) is the Default Room |
+| `POST /zones/create` | `{"name", "home"?}` | `{"zone": {"id", "name"}, "added"}`, as for rooms |
+| `POST /zones/rename` | `{"zone", "name"}` | `{"zone", "name"}` |
+| `POST /zones/delete` | `{"zone"}` | `{"zone"}` |
+| `POST /zones/rooms` | `{"zone", "add": [roomID], "remove": [roomID]}` | `{"zone", "roomIDs"}` |
+| `POST /groups/create` | `{"name", "services": [serviceID], "home"?}` | `{"group": {"id", "name"}}` |
+| `POST /groups/rename` | `{"group", "name"}` | `{"group", "name"}` |
+| `POST /groups/delete` | `{"group"}` | `{"group"}` |
+| `POST /groups/services` | `{"group", "add": [serviceID], "remove": [serviceID]}` | `{"group", "services"}` |
+
+`home` is needed only when Wingman serves several homes: without it, a room or zone is created in the only one, and a
+group in its first service's. Names are trimmed and have 1 to 64 characters (else `400`). An unknown id is `404`
+(every id is checked before anything changes), a name another zone or group of the home has, case and accents
+aside, `422` (a group with no services left, which the Home app does not show, holds no name), and so is a HomeKit refusal, with `done` as above.
 
 ## Building
 

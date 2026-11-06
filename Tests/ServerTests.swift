@@ -84,9 +84,12 @@ func expect(_ condition: Bool, _ message: String) throws {
         try structureRequests()
         try pairing()
         try await network()
+        try await homeLinkRoutes()
+        try activityFile()
         try await demo()
         try await demoStructure()
-        print("PASS: parser, structure requests, pairing transactions, last-seen persistence, network limits, revocation, listener recovery and the demo home's structure")
+        try await demoHomeLink()
+        print("PASS: parser, structure requests, pairing transactions, last-seen persistence, network limits, revocation, listener recovery, the demo home's structure and the Home Link")
     }
 
     static func parser() throws {
@@ -117,7 +120,7 @@ func expect(_ condition: Bool, _ message: String) throws {
         func refused(_ path: String, _ json: String) -> String? {
             do { _ = try parse(path, json); return nil } catch let error as StructureRequestError { return error.message } catch { return "\(error)" }
         }
-        try expect(StructureEdit.paths.count == 13, "every edit path")
+        try expect(StructureEdit.paths.count == 23, "every edit path")
         guard case .renameRoom("room-1", "Séjour") = try parse("rooms/rename", #"{"room": "room-1", "name": "  Séjour "}"#) else {
             throw TestFailure(message: "room rename, name trimmed")
         }
@@ -174,6 +177,63 @@ func expect(_ condition: Bool, _ message: String) throws {
         try expect(StructureValue.coerce("not base64", format: "data", minimum: nil, maximum: nil) == nil, "data is base64")
         try expect(StructureValue.same(Data([1]), Data([1])) && !StructureValue.same(Data([1]), "AQ=="), "data compares as data")
         try expect(sameRoomName("Entrée", "entree") && !sameRoomName("Entrée", "Entry"), "room names compare without case or accents")
+
+        // The Home Link's edits, by HomeKit id
+        guard case .createRoom(nil, "Bureau") = try parse("rooms/create", #"{"name": " Bureau "}"#) else { throw TestFailure(message: "room creation, no home") }
+        guard case .createRoom("home-1", "Bureau") = try parse("rooms/create", #"{"home": "home-1", "name": "Bureau"}"#) else {
+            throw TestFailure(message: "room creation in a home")
+        }
+        guard case .deleteRoom("room-1") = try parse("rooms/delete", #"{"room": "room-1"}"#) else { throw TestFailure(message: "room deletion") }
+        guard case .assignAccessory("acc-1", "room-1") = try parse("accessories/room", #"{"accessory": "acc-1", "roomID": "room-1"}"#) else {
+            throw TestFailure(message: "accessory move by room id")
+        }
+        guard case .assignAccessory("acc-1", nil) = try parse("accessories/room", #"{"accessory": "acc-1", "roomID": null}"#) else {
+            throw TestFailure(message: "null is the Default Room")
+        }
+        guard case .assignAccessory("acc-1", "room-1") = try parse("accessories/room", #"{"accessory": "acc-1", "roomID": "room-1", "room": "Garage"}"#) else {
+            throw TestFailure(message: "roomID wins over the name")
+        }
+        guard case .createZone(nil, "Étage") = try parse("zones/create", #"{"name": "Étage"}"#) else { throw TestFailure(message: "zone creation") }
+        guard case .renameZone("zone-1", "Haut") = try parse("zones/rename", #"{"zone": "zone-1", "name": "Haut"}"#) else { throw TestFailure(message: "zone rename") }
+        guard case .deleteZone("zone-1") = try parse("zones/delete", #"{"zone": "zone-1"}"#) else { throw TestFailure(message: "zone deletion") }
+        guard case .zoneRooms("zone-1", ["r1", "r2"], ["r3"]) = try parse("zones/rooms", #"{"zone": "zone-1", "add": ["r1", "r2", "r1"], "remove": ["r3"]}"#) else {
+            throw TestFailure(message: "zone rooms, once each")
+        }
+        guard case .zoneRooms("zone-1", [], ["r3"]) = try parse("zones/rooms", #"{"zone": "zone-1", "remove": ["r3"]}"#) else {
+            throw TestFailure(message: "zone rooms, add left out")
+        }
+        guard case .createGroup(nil, "Lampes", ["s1", "s2"]) = try parse("groups/create", #"{"name": "Lampes", "services": ["s1", "s2"]}"#) else {
+            throw TestFailure(message: "group creation")
+        }
+        guard case .renameGroup("group-1", "Lumières") = try parse("groups/rename", #"{"group": "group-1", "name": "Lumières"}"#) else {
+            throw TestFailure(message: "group rename")
+        }
+        guard case .deleteGroup("group-1") = try parse("groups/delete", #"{"group": "group-1"}"#) else { throw TestFailure(message: "group deletion") }
+        guard case .groupServices("group-1", ["s1"], ["s2"]) = try parse("groups/services", #"{"group": "group-1", "add": ["s1"], "remove": ["s2"]}"#) else {
+            throw TestFailure(message: "group services")
+        }
+        for path in ["rooms/create", "rooms/delete", "zones/create", "zones/rooms", "groups/create", "groups/services"] {
+            let edit = try parse(path, #"{"name": "N", "room": "r", "zone": "z", "group": "g", "services": []}"#)
+            try expect(edit.isStructural && edit.eventKind == "homes", "\(path) is structural and makes a homes event")
+        }
+        let long = String(repeating: "é", count: 65)
+        try expect(refused("rooms/create", #"{"name": "\#(String(repeating: "é", count: 64))"}"#) == nil, "64 characters is a name")
+        for (path, body, what) in [
+            ("rooms/create", #"{"name": "  "}"#, "an empty name"),
+            ("rooms/create", #"{"name": "\#(long)"}"#, "a name over 64 characters"),
+            ("zones/create", #"{"name": "\#(long)"}"#, "a zone name over 64 characters"),
+            ("zones/rename", #"{"zone": "z", "name": ""}"#, "an empty zone name"),
+            ("groups/rename", #"{"group": "g", "name": "\#(long)"}"#, "a group name over 64 characters"),
+            ("groups/create", #"{"name": "G"}"#, "a group without its services"),
+            ("groups/create", #"{"name": "G", "services": [1]}"#, "services are ids"),
+            ("rooms/create", #"{"home": 1, "name": "R"}"#, "a home is an id"),
+            ("accessories/room", #"{"accessory": "a", "roomID": 3}"#, "a room id is a string or null"),
+            ("zones/rooms", #"{"zone": "z", "add": ["r"], "remove": ["r"]}"#, "a room both added and removed"),
+            ("groups/services", #"{"group": "g", "add": "s"}"#, "add is a list"),
+            ("rooms/delete", #"{}"#, "a room to delete"),
+        ] {
+            try expect(refused(path, body) != nil, "refused: \(what)")
+        }
         print("PASS: structure request bodies, times and action values")
     }
 
@@ -332,6 +392,132 @@ func expect(_ condition: Bool, _ message: String) throws {
         print("PASS: demo rooms, scenes and automations: listing, edits, refusals and events")
     }
 
+    /// The demo home's Default Room, zones and service groups, and every Home Link edit with its refusals and events.
+    @MainActor static func demoHomeLink() async throws {
+        let demo = DemoStore()
+        var made = 0
+        func edit(_ path: String, _ json: String) async throws -> StoreAnswer {
+            let answer = await demo.edit(try StructureEdit.parse(path: path, body: Data(json.utf8)), allowSecurity: false)
+            if answer.status.hasPrefix("200") { made += 1 }
+            return answer
+        }
+        func home() -> [String: Any] { demo.homesJSON()[0] }
+        func accessory(_ id: String) -> [String: Any] { (home()["accessories"] as? [[String: Any]])?.first { $0["id"] as? String == id } ?? [:] }
+        func zone(_ id: String) -> [String: Any] { (home()["zones"] as? [[String: Any]])?.first { $0["id"] as? String == id } ?? [:] }
+        func group(_ id: String) -> [String: Any] { (home()["serviceGroups"] as? [[String: Any]])?.first { $0["id"] as? String == id } ?? [:] }
+        func id(_ answer: StoreAnswer, _ key: String) -> String { (answer.body[key] as? [String: Any])?["id"] as? String ?? "" }
+        let lamp = "D3E0DE00-0000-4000-8000-000000000101", ceiling = "D3E0DE00-0000-4000-8000-000000000102"
+        let plug = "D3E0DE00-0000-4000-8000-000000000103"
+        let roomIDs = Dictionary(uniqueKeysWithValues: demo.rooms.map { ($0.name, $0.id) })
+        let living = roomIDs["Living Room"] ?? "", kitchen = roomIDs["Kitchen"] ?? "", office = roomIDs["Office"] ?? ""
+
+        // What /homes adds
+        let start = home()
+        let defaultRoom = start["defaultRoom"] as? [String: Any] ?? [:]
+        try expect(defaultRoom["id"] as? String == DemoStore.defaultRoom.id && defaultRoom["name"] as? String == "Default Room", "the Default Room")
+        try expect(!(start["rooms"] as? [[String: Any]] ?? []).contains { $0["id"] as? String == DemoStore.defaultRoom.id }, "which is not one of the rooms")
+        try expect(accessory(lamp)["roomID"] as? String == living && accessory(lamp)["room"] as? String == "Living Room", "an accessory's room id, its name kept")
+        let downstairs = zone("demo-zone-downstairs")
+        try expect(downstairs["name"] as? String == "Demo Downstairs" && (downstairs["roomIDs"] as? [String])?.contains(living) == true
+                   && (downstairs["rooms"] as? [String])?.contains("Living Room") == true, "zones have ids, room ids and room names")
+        let services = (start["accessories"] as? [[String: Any]] ?? []).flatMap { ($0["services"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String } }
+        let lights = group("demo-group-lights")
+        try expect(lights["name"] as? String == "Demo Lights (Synthetic)" && (lights["services"] as? [String])?.allSatisfy(services.contains) == true
+                   && (lights["services"] as? [String])?.count == 2, "service groups list the services /homes gives")
+
+        // Rooms
+        let bureau = try await edit("rooms/create", #"{"name": "Bureau"}"#)
+        let bureauID = id(bureau, "room")
+        try expect(bureau.body["added"] as? Bool == true && !bureauID.isEmpty && (bureau.body["room"] as? [String: Any])?["name"] as? String == "Bureau", "a room created")
+        let again = try await edit("rooms/create", #"{"home": "\#(DemoStore.homeID)", "name": "BURÉAU"}"#)
+        try expect(again.status.hasPrefix("200") && again.body["added"] as? Bool == false && id(again, "room") == bureauID, "a room of that name, case and accents aside, is answered")
+        try expect(try await edit("rooms/create", #"{"home": "nope", "name": "X"}"#).status.hasPrefix("404"), "no such home")
+
+        // Moves by id
+        let moved = try await edit("accessories/room", #"{"accessory": "\#(lamp)", "roomID": "\#(bureauID)"}"#)
+        try expect(moved.body["roomID"] as? String == bureauID && accessory(lamp)["room"] as? String == "Bureau", "moved by room id")
+        let unassigned = try await edit("accessories/room", #"{"accessory": "\#(lamp)", "roomID": null}"#)
+        try expect(unassigned.status.hasPrefix("200") && unassigned.body["roomID"] is NSNull, "moved to the Default Room")
+        try expect(accessory(lamp)["roomID"] is NSNull && accessory(lamp)["room"] as? String == "Default Room", "where /homes says null")
+        try expect(demo.panelHomes().description.contains("Default Room"), "the panel shows the Default Room once it has accessories")
+        let byDefaultID = try await edit("accessories/room", #"{"accessory": "\#(ceiling)", "roomID": "\#(DemoStore.defaultRoom.id)"}"#)
+        try expect(byDefaultID.body["roomID"] is NSNull && accessory(ceiling)["roomID"] is NSNull, "the Default Room's own id is the Default Room")
+        try expect(try await edit("accessories/room", #"{"accessory": "\#(lamp)", "roomID": "nope"}"#).status.hasPrefix("404"), "no such room")
+        try expect(try await edit("accessories/room", #"{"accessory": "nope", "roomID": null}"#).status.hasPrefix("404"), "no such accessory")
+        try expect(accessory(lamp)["roomID"] is NSNull, "a refused move changes nothing")
+        let byName = try await edit("accessories/room", #"{"accessory": "\#(ceiling)", "room": "bureau"}"#)
+        try expect(byName.body["roomID"] as? String == bureauID && byName.body["added"] as? Bool == false, "the by-name form stays")
+
+        // Deleting a room
+        _ = try await edit("zones/rooms", #"{"zone": "demo-zone-upstairs", "add": ["\#(bureauID)"]}"#)
+        try expect((zone("demo-zone-upstairs")["roomIDs"] as? [String]) == [office, bureauID], "a room added to a zone")
+        let deleted = try await edit("rooms/delete", #"{"room": "\#(bureauID)"}"#)
+        try expect(deleted.body["room"] as? String == bureauID && !demo.rooms.contains { $0.id == bureauID }, "a room deleted")
+        try expect(accessory(ceiling)["roomID"] is NSNull, "its accessories go to the Default Room")
+        try expect((zone("demo-zone-upstairs")["roomIDs"] as? [String]) == [office], "and it leaves its zones")
+        try expect(try await edit("rooms/delete", #"{"room": "\#(bureauID)"}"#).status.hasPrefix("404"), "no such room")
+        try expect(try await edit("rooms/delete", #"{"room": "\#(DemoStore.defaultRoom.id)"}"#).status.hasPrefix("404"), "the Default Room is not deleted")
+
+        // Zones
+        let garden = try await edit("zones/create", #"{"name": "Demo Garden"}"#)
+        let gardenID = id(garden, "zone")
+        try expect(garden.body["added"] as? Bool == true && zone(gardenID)["roomIDs"] as? [String] == [], "a zone created, with no rooms")
+        let gardenAgain = try await edit("zones/create", #"{"name": "demo gardén"}"#)
+        try expect(gardenAgain.body["added"] as? Bool == false && id(gardenAgain, "zone") == gardenID, "a zone of that name is answered")
+        let taken = try await edit("zones/rename", #"{"zone": "\#(gardenID)", "name": "demo upstairs"}"#)
+        try expect(taken.status.hasPrefix("422") && zone(gardenID)["name"] as? String == "Demo Garden", "a name another zone has")
+        let outside = try await edit("zones/rename", #"{"zone": "\#(gardenID)", "name": "Demo Outside"}"#)
+        try expect(outside.body["zone"] as? String == gardenID && outside.body["name"] as? String == "Demo Outside", "a zone renamed")
+        try expect(try await edit("zones/rename", #"{"zone": "\#(gardenID)", "name": "demo outside"}"#).status.hasPrefix("200"), "its own name, recased")
+        let rooms = try await edit("zones/rooms", #"{"zone": "\#(gardenID)", "add": ["\#(kitchen)", "\#(office)"]}"#)
+        try expect(rooms.body["roomIDs"] as? [String] == [kitchen, office] && zone(gardenID)["rooms"] as? [String] == ["Kitchen", "Office"], "rooms added")
+        let fewer = try await edit("zones/rooms", #"{"zone": "\#(gardenID)", "add": ["\#(office)"], "remove": ["\#(kitchen)"]}"#)
+        try expect(fewer.body["roomIDs"] as? [String] == [office], "one removed, one already there")
+        let missing = try await edit("zones/rooms", #"{"zone": "\#(gardenID)", "add": ["\#(living)", "nope"]}"#)
+        try expect(missing.status.hasPrefix("404") && zone(gardenID)["roomIDs"] as? [String] == [office], "an unknown room refuses the whole change")
+        try expect(try await edit("zones/rooms", #"{"zone": "\#(gardenID)", "add": ["\#(DemoStore.defaultRoom.id)"]}"#).status.hasPrefix("404"), "the Default Room is in no zone")
+        try expect((zone("demo-zone-upstairs")["roomIDs"] as? [String]) == [office], "a room can be in several zones")
+        try expect(try await edit("zones/delete", #"{"zone": "\#(gardenID)"}"#).body["zone"] as? String == gardenID && zone(gardenID).isEmpty, "a zone deleted")
+        for (path, body) in [("zones/delete", #"{"zone": "\#(gardenID)"}"#), ("zones/rename", #"{"zone": "nope", "name": "X"}"#),
+                             ("zones/rooms", #"{"zone": "nope", "add": []}"#)] {
+            try expect(try await edit(path, body).status.hasPrefix("404"), "\(path): no such zone")
+        }
+
+        // Service groups
+        let kitchenGroup = try await edit("groups/create", #"{"name": "Demo Kitchen (Synthetic)", "services": ["\#(ceiling)-service", "\#(plug)-service"]}"#)
+        let kitchenID = id(kitchenGroup, "group")
+        try expect(kitchenGroup.status.hasPrefix("200") && (kitchenGroup.body["group"] as? [String: Any])?["name"] as? String == "Demo Kitchen (Synthetic)"
+                   && group(kitchenID)["services"] as? [String] == ["\(ceiling)-service", "\(plug)-service"], "a group created with its services")
+        try expect(try await edit("groups/create", #"{"name": "demo lights (synthetic)", "services": []}"#).status.hasPrefix("422"), "a name another group has")
+        try expect(try await edit("groups/create", #"{"name": "Demo X", "services": ["nope"]}"#).status.hasPrefix("404"), "a service the home lacks")
+        try expect(try await edit("groups/create", #"{"home": "nope", "name": "Demo X", "services": []}"#).status.hasPrefix("404"), "a home Wingman lacks")
+        try expect(try await edit("groups/rename", #"{"group": "\#(kitchenID)", "name": "Demo Lights (Synthetic)"}"#).status.hasPrefix("422"), "renamed onto another group")
+        let renamedGroup = try await edit("groups/rename", #"{"group": "\#(kitchenID)", "name": "Demo Counter (Synthetic)"}"#)
+        try expect(renamedGroup.body["group"] as? String == kitchenID && group(kitchenID)["name"] as? String == "Demo Counter (Synthetic)", "a group renamed")
+        let members = try await edit("groups/services", #"{"group": "\#(kitchenID)", "add": ["\#(lamp)-service"], "remove": ["\#(plug)-service"]}"#)
+        try expect(members.body["services"] as? [String] == ["\(ceiling)-service", "\(lamp)-service"], "services added and removed")
+        try expect(try await edit("groups/services", #"{"group": "\#(kitchenID)", "add": ["nope"]}"#).status.hasPrefix("404")
+                   && group(kitchenID)["services"] as? [String] == ["\(ceiling)-service", "\(lamp)-service"], "an unknown service refuses the whole change")
+        // A group left with no services is not in the Home app, so its name is free (real homes keep such groups).
+        _ = try await edit("groups/services", #"{"group": "\#(kitchenID)", "remove": ["\#(ceiling)-service", "\#(lamp)-service"]}"#)
+        let reused = try await edit("groups/create", #"{"name": "Demo Counter (Synthetic)", "services": ["\#(ceiling)-service"]}"#)
+        try expect(reused.status.hasPrefix("200") && group(kitchenID)["services"] as? [String] == [], "an empty group's name is free")
+        try expect(try await edit("groups/rename", #"{"group": "\#(id(reused, "group"))", "name": "Demo Lights (Synthetic)"}"#).status.hasPrefix("422"),
+                   "a rename still refuses a group with services")
+        _ = try await edit("groups/delete", #"{"group": "\#(id(reused, "group"))"}"#)
+        try expect(try await edit("groups/delete", #"{"group": "\#(kitchenID)"}"#).body["group"] as? String == kitchenID && group(kitchenID).isEmpty, "a group deleted")
+        for (path, body) in [("groups/delete", #"{"group": "\#(kitchenID)"}"#), ("groups/rename", #"{"group": "nope", "name": "X"}"#),
+                             ("groups/services", #"{"group": "nope", "add": []}"#)] {
+            try expect(try await edit(path, body).status.hasPrefix("404"), "\(path): no such group")
+        }
+
+        // One homes event per edit made, none for a refusal
+        let events = demo.eventsJSON(since: 0)
+        try expect(events.count == made && events.allSatisfy { $0["kind"] as? String == "homes" && $0["home"] as? String == DemoStore.homeName },
+                   "a homes event for each of the \(made) edits made: \(events.count)")
+        print("PASS: demo Home Link: Default Room, zones and service groups by id, with refusals and events")
+    }
+
     @MainActor static func pairing() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -376,17 +562,11 @@ func expect(_ condition: Bool, _ message: String) throws {
     @MainActor static func structureRoutes(port: UInt16, token: String, store: FakeStore, allow: (Bool) -> Void,
                                            allowChanges: (Bool) -> Void) async throws {
         func request(_ method: String, _ path: String, _ body: String = "") async throws -> (status: String, json: [String: Any]) {
-            let client = TestClient(port: port, request: "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \(token)\r\n"
-                + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)")
-            try await eventually("\(method) \(path) response") { client.ended }
-            let parts = client.text.components(separatedBy: "\r\n\r\n")
-            let status = parts.first?.components(separatedBy: "\r\n").first ?? ""
-            let json = (try? JSONSerialization.jsonObject(with: Data((parts.dropFirst().first ?? "").utf8))) as? [String: Any] ?? [:]
-            return (status, json)
+            try await ServerTests.request(port: port, token: token, method, path, body)
         }
         let info = try await request("GET", "/info")
-        try expect(info.json["features"] as? [String] == ["structure"] && info.json["structure"] as? Bool == false && info.json["api"] as? String == "1",
-                   "info lists the structure feature, edits off, the same API version")
+        try expect(info.json["features"] as? [String] == ["structure", "home-link"] && info.json["structure"] as? Bool == false && info.json["api"] as? String == "1",
+                   "info lists the structure and Home Link features, edits off, the same API version")
         let scenes = try await request("GET", "/scenes")
         try expect((scenes.json["scenes"] as? [[String: Any]])?.first?["id"] as? String == "scene-1", "scenes are read with edits off")
         let automations = try await request("GET", "/automations")
@@ -415,6 +595,128 @@ func expect(_ condition: Bool, _ message: String) throws {
         allowChanges(true)
         allow(false)
         print("PASS: structure routes, the owner's setting and request validation over loopback")
+    }
+
+    @MainActor static func activityFile() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("activity.jsonl")
+        try expect(ActivityFeed(file: file).entries.isEmpty, "no file is an empty feed")
+        func entry(_ index: Int) -> ActivityFeed.Entry {
+            .init(date: Date(timeIntervalSince1970: Double(1_800_000_000 + index)), bridge: "Fixture", title: "Demo \(index)",
+                  summary: "Demo Room (Synthetic)", outcome: index == 1 ? .refused : .changed, milliseconds: index, demo: index == 2 ? true : nil)
+        }
+        func fileLines() throws -> [String] { try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map(String.init) }
+        let feed = ActivityFeed(file: file, limit: 2)
+        for index in 0..<3 { feed.record(entry(index)) }
+        feed.flush()
+        try expect(try fileLines().count == 3, "each entry is appended as a line")
+        let reopened = ActivityFeed(file: file, limit: 2)
+        try expect(reopened.entries.map(\.title) == ["Demo 2", "Demo 1"] && reopened.entries[1].outcome == .refused
+                   && reopened.entries[0].date == Date(timeIntervalSince1970: 1_800_000_002) && reopened.entries[0].demo == true && reopened.entries[1].demo == nil,
+                   "a relaunch reads the latest entries back, newest first, the demo's still marked")
+        let permissions = (try FileManager.default.attributesOfItem(atPath: file.path))[.posixPermissions] as? Int
+        try expect(permissions == 0o600, "the file is the owner's only: \(String(permissions ?? 0, radix: 8))")
+        for index in 3..<5 { reopened.record(entry(index)) }
+        reopened.flush()
+        try expect(try fileLines().count == 2 && (try fileLines().last ?? "").contains("Demo 4"), "past twice the limit, the file keeps only the feed")
+        let handle = try FileHandle(forWritingTo: file)
+        handle.seekToEndOfFile()
+        handle.write(Data(#"{"title": "cut sh"#.utf8))
+        try handle.close()
+        try expect(ActivityFeed(file: file, limit: 2).entries.map(\.title) == ["Demo 4", "Demo 3"], "a line a crash cut short is skipped")
+        print("PASS: the activity feed is appended to a file a relaunch reads, owner-only, kept small, a cut line skipped")
+    }
+
+    /// One authorised request over loopback, its status line and JSON body.
+    @MainActor static func request(port: UInt16, token: String, _ method: String, _ path: String, _ body: String) async throws -> (status: String, json: [String: Any]) {
+        let client = TestClient(port: port, request: "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \(token)\r\n"
+            + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)")
+        try await eventually("\(method) \(path) response") { client.ended }
+        let parts = client.text.components(separatedBy: "\r\n\r\n")
+        let status = parts.first?.components(separatedBy: "\r\n").first ?? ""
+        let json = (try? JSONSerialization.jsonObject(with: Data((parts.dropFirst().first ?? "").utf8))) as? [String: Any] ?? [:]
+        return (status, json)
+    }
+
+    /// The Home Link's reads and edits through the server, on the demo home: the same settings gate them as the other
+    /// edits, and a bridge sees each one as a homes event. Loopback without TLS, as `network`: TLS needs the keychain.
+    @MainActor static func homeLinkRoutes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pairing = Pairing(directory: root)
+        pairing.openPairing()
+        guard case let .paired(token, _) = pairing.pair(code: pairing.open!.code, name: "Fixture") else { throw TestFailure(message: "fixture pairing") }
+        let demo = DemoStore()
+        var structure = false
+        var changes = true
+        let server = LocalServer(store: demo, pairing: pairing, fingerprint: "fixture", configuration: { .init(port: 0, advertise: false) },
+                                 changesAllowed: { changes }, structureAllowed: { structure }, makeParameters: {
+            let parameters = NWParameters.tcp
+            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+            return parameters
+        })
+        defer { server.stop() }
+        server.start()
+        try await eventually("listener ready") { server.state == "listening" }
+        let port = server.boundPort!
+        func request(_ method: String, _ path: String, _ body: String = "") async throws -> (status: String, json: [String: Any]) {
+            try await ServerTests.request(port: port, token: token, method, path, body)
+        }
+        try expect((try await request("GET", "/info")).json["features"] as? [String] == ["structure", "home-link"], "info lists home-link")
+        let homes = try await request("GET", "/homes")
+        let home = (homes.json["homes"] as? [[String: Any]])?.first ?? [:]
+        try expect((home["defaultRoom"] as? [String: Any])?["id"] as? String == DemoStore.defaultRoom.id && (home["serviceGroups"] as? [Any])?.count == 1
+                   && (home["zones"] as? [[String: Any]])?.allSatisfy { $0["id"] is String && $0["roomIDs"] is [String] } == true,
+                   "/homes serves the Default Room, zones by id and service groups")
+        let lamp = "D3E0DE00-0000-4000-8000-000000000101"
+        try expect((home["accessories"] as? [[String: Any]])?.first { $0["id"] as? String == lamp }?["roomID"] is String, "and each accessory's room id")
+
+        let off = try await request("POST", "/rooms/create", #"{"name": "Demo Attic"}"#)
+        try expect(off.status.contains("403") && demo.rooms.count == 4 && off.json["setting"] as? String == "allowStructure", "a Home Link edit needs the structure setting, named")
+        structure = true
+        changes = false
+        let readOnly = try await request("POST", "/zones/create", #"{"name": "Demo Attic"}"#)
+        try expect(readOnly.status.contains("403") && demo.zones.count == 2 && readOnly.json["setting"] as? String == "allowChanges", "and changes")
+        changes = true
+        let since = demo.lastSeq
+        let created = try await request("POST", "/rooms/create", #"{"name": "Demo Attic"}"#)
+        let attic = (created.json["room"] as? [String: Any])?["id"] as? String ?? ""
+        try expect(created.status.contains("200") && created.json["added"] as? Bool == true && !attic.isEmpty, "a room created over the API")
+        let zone = try await request("POST", "/zones/create", #"{"name": "Demo Top"}"#)
+        let top = (zone.json["zone"] as? [String: Any])?["id"] as? String ?? ""
+        let zoned = try await request("POST", "/zones/rooms", #"{"zone": "\#(top)", "add": ["\#(attic)"]}"#)
+        try expect(zoned.json["roomIDs"] as? [String] == [attic], "a room put in a zone")
+        let moved = try await request("POST", "/accessories/room", #"{"accessory": "\#(lamp)", "roomID": null}"#)
+        try expect(moved.status.contains("200") && moved.json["roomID"] is NSNull, "an accessory moved to the Default Room, answering null")
+        let grouped = try await request("POST", "/groups/create", #"{"name": "Demo Pair (Synthetic)", "services": ["\#(lamp)-service"]}"#)
+        let pair = (grouped.json["group"] as? [String: Any])?["id"] as? String ?? ""
+        try expect(grouped.status.contains("200") && !pair.isEmpty, "a group created")
+        try expect((try await request("POST", "/groups/rename", #"{"group": "\#(pair)", "name": "Demo Lights (Synthetic)"}"#)).status.contains("422"), "a taken name is 422")
+        try expect((try await request("POST", "/zones/delete", #"{"zone": "nope"}"#)).status.contains("404"), "an unknown id is 404")
+        try expect((try await request("POST", "/groups/rename", #"{"group": "\#(pair)", "name": "\#(String(repeating: "x", count: 65))"}"#)).status.contains("400"),
+                   "a name over 64 characters is 400")
+        let events = try await request("GET", "/events?since=\(since)")
+        let kinds = (events.json["events"] as? [[String: Any]] ?? []).compactMap { $0["kind"] as? String }
+        try expect(kinds == Array(repeating: "homes", count: 5), "a homes event for each edit made: \(kinds)")
+
+        // The panel's Activity: what the bridge asked, by name, newest first; the polls above are not in it.
+        try expect((try await request("POST", "/write", #"{"accessory": "\#(lamp)", "characteristic": "Power State", "value": true}"#)).status.contains("200"), "a write")
+        _ = try await request("POST", "/read")
+        _ = try await request("POST", "/write", #"{"accessory": "\#(lamp)", "characteristic": "Identify", "value": true}"#)
+        let identified = server.activity.entries[0]
+        try expect(identified.title == "Identified accessory" && identified.summary == "Demo Floor Lamp", "Identify says so: \(identified.title): \(identified.summary)")
+        let feed = Array(server.activity.entries.dropFirst())
+        func line(_ index: Int) -> String { "\(feed[index].outcome.rawValue) \(feed[index].title): \(feed[index].summary)" }
+        try expect(feed.count == 11 && feed.allSatisfy { $0.bridge == "Fixture" }, "one entry per request that asks for something, polls left out: \(feed.map(\.title))")
+        try expect(line(0).hasPrefix("read Read all values: ") && line(0).contains(" read"), "Read All is a read, its failures counted: \(line(0))")
+        try expect(line(1) == "changed Changed accessory: Demo Floor Lamp: Power State → on", "a write by name, a switch as on: \(line(1))")
+        try expect(line(3).hasPrefix("failed Renamed group: Demo Pair (Synthetic) → Demo Lights (Synthetic) · "), "a HomeKit refusal says why: \(line(3))")
+        try expect(line(4) == "changed Created group: Demo Pair (Synthetic): Demo Floor Lamp", "a group's services by accessory: \(line(4))")
+        try expect(line(5) == "changed Moved accessory: Demo Floor Lamp → Default Room", "a move to the Default Room: \(line(5))")
+        try expect(line(6) == "changed Changed zone: Demo Top: added Demo Attic", "zone rooms by name: \(line(6))")
+        try expect(line(10).hasPrefix("refused Created room: Demo Attic · "), "a refusal by Wingman's settings: \(line(10))")
+        print("PASS: Home Link routes, settings, refusals, events and the activity feed over loopback")
     }
 
     @MainActor static func network() async throws {

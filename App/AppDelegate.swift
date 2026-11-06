@@ -36,6 +36,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         store.onEvent = { [weak self] in if !Settings.demoMode { self?.server?.eventsArrived() } }
         demo.onEvent = { [weak self] in if Settings.demoMode { self?.server?.eventsArrived() } }
         server?.onChange = { [weak self] in self?.menuBar?.refresh() }
+        server?.activity.onChange = { [weak self] in self?.menuBar?.refresh() }
         store.start()
         return true
     }

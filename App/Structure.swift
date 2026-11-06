@@ -17,9 +17,15 @@ struct StoreAnswer {
     }
 
     static var notAdministrator: StoreAnswer { forbidden("only an administrator of the home can change it") }
-    static var turnedOff: StoreAnswer { forbidden("structural edits are turned off in Wingman's settings") }
+    /// Refusals by one of the owner's switches name it in `setting`, so a bridge, and the panel's Activity, can tell
+    /// them from HomeKit's.
+    static func setting(_ key: String, _ message: String) -> StoreAnswer {
+        StoreAnswer(status: "403 Forbidden", body: ["error": message, "setting": key])
+    }
+    static var changesOff: StoreAnswer { setting("allowChanges", "changes are turned off in Wingman's settings") }
+    static var turnedOff: StoreAnswer { setting("allowStructure", "structural edits are turned off in Wingman's settings") }
     static func security(_ name: String) -> StoreAnswer {
-        forbidden("\(name) operates a lock, garage door or alarm; turn on Let bridges operate locks and doors in Wingman's settings")
+        setting("allowSecurity", "\(name) operates a lock, garage door or alarm; turn on Let bridges operate locks and doors in Wingman's settings")
     }
     static func builtIn(_ name: String) -> StoreAnswer {
         refused("\(name) is one of Apple Home's built-in scenes: HomeKit does not rename or delete it")
@@ -101,11 +107,25 @@ struct StructureRequestError: Error {
     init(_ message: String) { self.message = message }
 }
 
-/// A request to change Apple Home's rooms, scenes or automations (or to run a scene), parsed from `POST /<path>`.
-/// `HomeStore` applies it through HomeKit, `DemoStore` to its synthetic home, with the same checks.
+/// A request to change Apple Home's rooms, zones, service groups, scenes or automations (or to run a scene), parsed
+/// from `POST /<path>`. `HomeStore` applies it through HomeKit, `DemoStore` to its synthetic home, with the same checks.
 enum StructureEdit {
     case renameRoom(room: String, name: String)
     case moveAccessory(accessory: String, room: String)
+    /// The Home Link's edits (`home-link` in `/info`), by HomeKit id. `home` is optional where the body names nothing
+    /// else in a home: Wingman then uses its only home, and refuses when it serves several.
+    case createRoom(home: String?, name: String)
+    case deleteRoom(String)
+    /// `roomID` nil is the Default Room.
+    case assignAccessory(accessory: String, roomID: String?)
+    case createZone(home: String?, name: String)
+    case renameZone(String, name: String)
+    case deleteZone(String)
+    case zoneRooms(String, add: [String], remove: [String])
+    case createGroup(home: String?, name: String, services: [String])
+    case renameGroup(String, name: String)
+    case deleteGroup(String)
+    case groupServices(String, add: [String], remove: [String])
     case runScene(String)
     case renameScene(String, name: String)
     case sceneActions(String, [StructureAction])
@@ -122,7 +142,12 @@ enum StructureEdit {
         "rooms/rename", "accessories/room", "scenes/run", "scenes/rename", "scenes/actions", "scenes/create", "scenes/delete",
         "automations/enable", "automations/rename", "automations/time", "automations/scenes", "automations/actions",
         "automations/delete",
+        "rooms/create", "rooms/delete", "zones/create", "zones/rename", "zones/delete", "zones/rooms", "groups/create",
+        "groups/rename", "groups/delete", "groups/services",
     ]
+
+    /// The longest room, zone or service group name the Home Link's edits take.
+    static let maximumNameLength = 64
 
     /// Running a scene changes accessories, as a write does; everything else changes the home itself.
     var isStructural: Bool {
@@ -133,7 +158,8 @@ enum StructureEdit {
     /// The kind of event the change makes: what a bridge reads again.
     var eventKind: String? {
         switch self {
-        case .renameRoom, .moveAccessory: "homes"
+        case .renameRoom, .moveAccessory, .createRoom, .deleteRoom, .assignAccessory, .createZone, .renameZone, .deleteZone,
+             .zoneRooms, .createGroup, .renameGroup, .deleteGroup, .groupServices: "homes"
         case .runScene: nil
         case .renameScene, .sceneActions, .createScene, .deleteScene: "scenes"
         default: "automations"
@@ -153,9 +179,57 @@ enum StructureEdit {
             guard !value.isEmpty else { throw StructureRequestError(#"expected "\#(key)", a name"#) }
             return value
         }
+        /// A room, zone or group name as the Home Link sends it: what HomeKit keeps, within 64 characters.
+        func shortName() throws(StructureRequestError) -> String {
+            let value = try name()
+            guard value.count <= maximumNameLength else { throw StructureRequestError("a name has at most \(maximumNameLength) characters") }
+            return value
+        }
+        func home() throws(StructureRequestError) -> String? {
+            guard let value = json["home"], !(value is NSNull) else { return nil }
+            guard let home = value as? String, !home.isEmpty else { throw StructureRequestError(#""home" is an id"#) }
+            return home
+        }
+        /// A list of ids, once each; an absent one is empty.
+        func ids(_ key: String, required: Bool = false) throws(StructureRequestError) -> [String] {
+            guard let value = json[key], !(value is NSNull) else {
+                if required { throw StructureRequestError(#"expected "\#(key)", a list of ids"#) }
+                return []
+            }
+            guard let list = value as? [String], !list.contains(where: \.isEmpty) else { throw StructureRequestError(#""\#(key)" is a list of ids"#) }
+            var seen: Set<String> = []
+            return list.filter { seen.insert($0).inserted }
+        }
+        func changes() throws(StructureRequestError) -> (add: [String], remove: [String]) {
+            let add = try ids("add"), remove = try ids("remove")
+            guard Set(add).isDisjoint(with: remove) else { throw StructureRequestError(#"an id is both in "add" and in "remove""#) }
+            return (add, remove)
+        }
         switch path {
         case "rooms/rename": return .renameRoom(room: try id("room"), name: try name())
-        case "accessories/room": return .moveAccessory(accessory: try id("accessory"), room: try name("room"))
+        case "accessories/room":
+            // `roomID` (null for the Default Room) is the Home Link's form; `room`, a name, the older one.
+            let accessory = try id("accessory")
+            switch json["roomID"] {
+            case nil: return .moveAccessory(accessory: accessory, room: try name("room"))
+            case is NSNull: return .assignAccessory(accessory: accessory, roomID: nil)
+            case let roomID as String where !roomID.isEmpty: return .assignAccessory(accessory: accessory, roomID: roomID)
+            default: throw StructureRequestError(#""roomID" is a room's id, or null"#)
+            }
+        case "rooms/create": return .createRoom(home: try home(), name: try shortName())
+        case "rooms/delete": return .deleteRoom(try id("room"))
+        case "zones/create": return .createZone(home: try home(), name: try shortName())
+        case "zones/rename": return .renameZone(try id("zone"), name: try shortName())
+        case "zones/delete": return .deleteZone(try id("zone"))
+        case "zones/rooms":
+            let (add, remove) = try changes()
+            return .zoneRooms(try id("zone"), add: add, remove: remove)
+        case "groups/create": return .createGroup(home: try home(), name: try shortName(), services: try ids("services", required: true))
+        case "groups/rename": return .renameGroup(try id("group"), name: try shortName())
+        case "groups/delete": return .deleteGroup(try id("group"))
+        case "groups/services":
+            let (add, remove) = try changes()
+            return .groupServices(try id("group"), add: add, remove: remove)
         case "scenes/run": return .runScene(try id("scene"))
         case "scenes/rename": return .renameScene(try id("scene"), name: try name())
         case "scenes/actions": return .sceneActions(try id("scene"), try actions(json["actions"]))
@@ -206,9 +280,20 @@ enum CharacteristicLookup {
     }
 }
 
-/// Room names as HomeKit compares them: "Entrée" is "entree".
+/// Room, zone and group names as HomeKit compares them: "Entrée" is "entree".
 func sameRoomName(_ a: String, _ b: String) -> Bool {
     a.compare(b, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+}
+
+/// A service group with no services left (its accessories removed, or added again under new ids) is not in the Home
+/// app, and real homes keep many: its name is free. Both stores ask this before creating or renaming a group.
+func groupHoldsName(services: Int) -> Bool { services > 0 }
+
+/// A zone's rooms, or a group's services, after an edit: `remove` taken out, then `add` put in once each, in order.
+func merged(_ list: [String], add: [String], remove: [String]) -> [String] {
+    var result = list.filter { !remove.contains($0) }
+    for id in add where !result.contains(id) { result.append(id) }
+    return result
 }
 
 /// Checks a value an action would write against the characteristic's format and range, as HomeKit would.

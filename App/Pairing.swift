@@ -39,8 +39,13 @@ final class Pairing {
     private var closing: Timer?
     private let file: URL
 
-    init(directory: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.mpconsulting.HomeswiftWingman", isDirectory: true),
+    /// Where the app keeps its pairings, and its activity beside them.
+    nonisolated static var defaultDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.mpconsulting.HomeswiftWingman", isDirectory: true)
+    }
+
+    init(directory: URL = Pairing.defaultDirectory,
          now: @escaping () -> Date = Date.init,
          writeFile: @escaping (Data, URL) throws -> Void = Pairing.write) {
         self.now = now
@@ -173,6 +178,14 @@ final class Pairing {
         let fd = Darwin.open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { Darwin.close(fd); try? FileManager.default.removeItem(at: temporary) }
+        try writeAll(data, to: fd)
+        guard fsync(fd) == 0, rename(temporary.path, url.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    /// Every byte, through short writes and interruptions.
+    nonisolated static func writeAll(_ data: Data, to fd: Int32) throws {
         try data.withUnsafeBytes { bytes in
             var offset = 0
             while offset < bytes.count {
@@ -181,9 +194,6 @@ final class Pairing {
                 guard count > 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
                 offset += count
             }
-        }
-        guard fsync(fd) == 0, rename(temporary.path, url.path) == 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }
 

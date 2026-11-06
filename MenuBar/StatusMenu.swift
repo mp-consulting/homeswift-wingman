@@ -202,6 +202,9 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
     private var applyPort: NSButton?
     private var portCheck: Task<Void, Never>?
     private var renderedBody: NSDictionary?
+    /// The Home tab's activity rows, redrawn on their own: a bridge's request must not rebuild every room.
+    private let activityRows = NSStackView()
+    private var renderedActivity: NSArray?
 
     override func loadView() {
         let root: NSView
@@ -344,8 +347,12 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         }
         let content = model.filter { keys.contains($0.key) }
         let signature = NSDictionary(dictionary: ["tab": selectedTab, "rooms": expandedRooms.sorted(), "removal": pendingRemoval ?? "", "content": content])
-        if let renderedBody, renderedBody.isEqual(signature) { return }
+        if let renderedBody, renderedBody.isEqual(signature) {
+            if selectedTab == 0 { renderActivity() }
+            return
+        }
         renderedBody = signature
+        renderedActivity = nil
         let origin = body.enclosingScrollView?.contentView.bounds.origin ?? .zero
         body.arrangedSubviews.forEach { body.removeArrangedSubview($0); $0.removeFromSuperview() }
         port = nil
@@ -358,7 +365,9 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         body.enclosingScrollView?.contentView.scroll(to: origin)
     }
 
-    private func label(_ text: String, small: Bool = false) -> NSTextField {
+    private func label(_ text: String, small: Bool = false) -> NSTextField { Self.label(text, small: small) }
+
+    private static func label(_ text: String, small: Bool = false) -> NSTextField {
         let field = NSTextField(wrappingLabelWithString: text)
         field.translatesAutoresizingMaskIntoConstraints = false
         field.font = .systemFont(ofSize: small ? 11 : 13)
@@ -471,6 +480,11 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
             add(label("No homes to show. Allow Home access in System Settings › Privacy & Security › Home, or try Wingman with a synthetic home.", small: true))
             add(button("Try Demo Mode", "setting:demoMode:1"))
         }
+        // First: what bridges just did stays in view, and Refresh stays with the rooms it reads, which can run to dozens.
+        activity()
+        let divider = NSBox()
+        divider.boxType = .separator
+        add(divider)
         row("Accessories", button("Refresh", "read"))
         if let read = model["lastRead"] as? String { add(label(read, small: true)) }
         for home in model["homes"] as? [[String: Any]] ?? [] {
@@ -573,6 +587,85 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
             add(value)
             add(button("Copy fingerprint", "copyFingerprint"))
         }
+    }
+
+    /// What paired bridges asked for, newest first (the bridge sends the latest few): one line each, a failure's
+    /// reason on two.
+    private func activity() {
+        section("Activity")
+        activityRows.orientation = .vertical
+        activityRows.alignment = .leading
+        activityRows.spacing = 0
+        body.addArrangedSubview(activityRows)
+        activityRows.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        renderActivity()
+    }
+
+    private func renderActivity() {
+        let entries = model["activity"] as? [[String: Any]] ?? []
+        // The day too: after midnight, yesterday's rows show their date instead of a bare time.
+        let signature = [entries, Calendar.current.startOfDay(for: Date()).timeIntervalSince1970] as NSArray
+        if let renderedActivity, renderedActivity.isEqual(signature) { return }
+        renderedActivity = signature
+        activityRows.arrangedSubviews.forEach { activityRows.removeArrangedSubview($0); $0.removeFromSuperview() }
+        let rows = entries.isEmpty ? [Self.label("Nothing yet. What paired bridges change in your home shows here.", small: true)] : entries.map(Self.activityRow)
+        for row in rows {
+            let wrapper = padded(row, top: entries.isEmpty ? 6 : 3, bottom: entries.isEmpty ? 6 : 3)
+            activityRows.addArrangedSubview(wrapper)
+            wrapper.widthAnchor.constraint(equalTo: activityRows.widthAnchor).isActive = true
+        }
+    }
+
+    /// A shape as well as a colour, so the outcome reads without telling green from orange.
+    static func activityStatus(_ outcome: String) -> (symbol: String, color: NSColor, label: String) {
+        switch outcome {
+        case "read": ("circle.fill", .systemGreen, "Read")
+        // Grey, not orange: a switch saying no is expected, and must not look like a change.
+        case "refused": ("hand.raised.fill", .secondaryLabelColor, "Refused")
+        case "failed": ("xmark.circle.fill", .systemRed, "Failed")
+        default: ("diamond.fill", .systemOrange, "Changed")
+        }
+    }
+
+    static func activityRow(_ entry: [String: Any]) -> NSView {
+        let outcome = entry["outcome"] as? String ?? "changed"
+        let status = activityStatus(outcome)
+        let mark = NSImageView(image: NSImage(systemSymbolName: status.symbol, accessibilityDescription: status.label)!)
+        mark.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+        mark.contentTintColor = status.color
+        mark.widthAnchor.constraint(equalToConstant: 10).isActive = true
+        let title = label(entry["title"] as? String ?? "", small: true)
+        title.textColor = .labelColor
+        title.maximumNumberOfLines = 1
+        title.lineBreakMode = .byTruncatingTail
+        title.widthAnchor.constraint(equalToConstant: 118).isActive = true
+        let summary = label(entry["summary"] as? String ?? "", small: true)
+        // A refusal or failure is the one summary worth a second line.
+        let trouble = outcome == "refused" || outcome == "failed"
+        summary.textColor = trouble ? .labelColor : .panelSecondary
+        summary.maximumNumberOfLines = trouble ? 2 : 1
+        summary.lineBreakMode = trouble ? .byWordWrapping : .byTruncatingTail
+        summary.cell?.truncatesLastVisibleLine = true
+        // The summary takes the width the time leaves, so every time lines up on the right.
+        summary.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        summary.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let date = Date(timeIntervalSince1970: entry["date"] as? Double ?? 0)
+        // The time alone reads as today: older entries show their day.
+        let time = NSTextField(labelWithString: Calendar.current.isDateInToday(date)
+            ? date.formatted(.dateTime.hour().minute()) : date.formatted(.dateTime.day().month(.abbreviated)))
+        time.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        time.textColor = .tertiaryLabelColor
+        time.setContentCompressionResistancePriority(.required, for: .horizontal)
+        time.setContentHuggingPriority(.required, for: .horizontal)
+        let row = NSStackView(views: [mark, title, summary, time])
+        row.spacing = 8
+        row.alignment = .firstBaseline
+        let bridge = entry["bridge"] as? String ?? "A bridge"
+        row.toolTip = "\(entry["summary"] as? String ?? "")\n\(bridge) · \(entry["milliseconds"] as? Int ?? 0) ms"
+        row.setAccessibilityElement(true)
+        row.setAccessibilityRole(.group)
+        row.setAccessibilityLabel("\(status.label): \(title.stringValue), \(summary.stringValue), by \(bridge), \(time.stringValue)")
+        return row
     }
 
     private func settings() {

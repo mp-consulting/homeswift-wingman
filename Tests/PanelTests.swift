@@ -117,6 +117,23 @@ import AppKit
                    && text("Read-only: bridges see your home but can’t change accessories, run scenes or edit rooms.")
                    && text("No effect while bridges can’t change accessories."), "notes follow the switches and the Local Network block")
         try expect(PanelFixtures.descendants(panel.view).contains { $0.identifier?.rawValue == "localNetworkSettings" }, "the block offers its setting")
+        panel.model = PanelFixtures.model
+        try PanelFixtures.click("Home", in: panel)
+        let rows = PanelFixtures.descendants(panel.view).compactMap { $0.accessibilityLabel() }.filter { $0.contains(", by Demo Bridge, ") }
+        try expect(text("ACTIVITY") && rows.count == PanelFixtures.activity.count, "the Home tab lists the activity above the rooms, one row each: \(rows.count)")
+        try expect(rows.first?.hasPrefix("Changed: Changed accessory, Floor Lamp: Power State → on") == true
+                   && rows.contains { $0.hasPrefix("Refused: Renamed room") } && rows.contains { $0.hasPrefix("Failed: Changed accessory") }
+                   && rows.contains { $0.hasPrefix("Read: Read all values") }, "each row says its outcome in words: \(rows.first ?? "")")
+        let roomButton = PanelFixtures.descendants(panel.view).first { $0.identifier?.rawValue == "room:living" }
+        panel.model["activity"] = [["date": Date().timeIntervalSince1970, "bridge": "Demo Bridge", "title": "Ran scene", "summary": "Demo Night",
+                                    "outcome": "changed", "milliseconds": 80]] + PanelFixtures.activity
+        try expect(roomButton != nil && PanelFixtures.descendants(panel.view).first { $0.identifier?.rawValue == "room:living" } === roomButton
+                   && text("Demo Night"), "a new activity row leaves the rooms as they are")
+        var quiet = PanelFixtures.model
+        quiet["activity"] = [[String: Any]]()
+        panel.model = quiet
+        try expect(text("Nothing yet. What paired bridges change in your home shows here."), "an empty feed says what will show")
+        try PanelFixtures.click("Settings", in: panel)
         var advertiseOff = PanelFixtures.model
         advertiseOff["advertise"] = false
         panel.model = advertiseOff

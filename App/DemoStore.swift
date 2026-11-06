@@ -4,7 +4,8 @@ import Foundation
 ///
 /// Nothing here touches HomeKit: names say "Demo" and "(Synthetic)", `/status` reports `"demo": true`, and writes only
 /// change these in-memory values. Locks, garage doors and alarms follow the same security setting as real ones. Its
-/// rooms, scenes and automations take the same edits as HomeKit's (`HomeStore+Structure.swift`), in memory.
+/// rooms, zones, service groups, scenes and automations take the same edits as HomeKit's (`HomeStore+Structure.swift`),
+/// in memory.
 @MainActor
 final class DemoStore: WingmanStore {
     struct Characteristic {
@@ -22,7 +23,8 @@ final class DemoStore: WingmanStore {
     struct Accessory {
         let id: String
         let name: String
-        var room: String
+        /// Nil in the Default Room, as `/homes` answers it.
+        var roomID: String?
         let category: String
         let symbol: String
         let serviceType: String
@@ -36,6 +38,23 @@ final class DemoStore: WingmanStore {
     struct Room {
         let id: String
         var name: String
+    }
+
+    /// Where accessories in no room are, as HomeKit's `roomForEntireHome()`: never one of `rooms`.
+    static let defaultRoom = Room(id: "demo-room-default", name: "Default Room")
+
+    /// A set of rooms, by id.
+    struct Zone {
+        let id: String
+        var name: String
+        var rooms: [String]
+    }
+
+    /// A HomeKit service group: services by id (an accessory's is its id followed by "-service").
+    struct ServiceGroup {
+        let id: String
+        var name: String
+        var services: [String]
     }
 
     /// An action set: its characteristic writes by accessory and characteristic id.
@@ -63,10 +82,18 @@ final class DemoStore: WingmanStore {
     var onEvent: (() -> Void)?
     private(set) var accessories: [Accessory]
     private(set) var rooms: [Room] = ["Living Room", "Kitchen", "Office", "Entrance"].map { Room(id: DemoStore.roomID($0), name: $0) }
+    private(set) var zones: [Zone] = [
+        Zone(id: "demo-zone-downstairs", name: "Demo Downstairs", rooms: ["Living Room", "Kitchen", "Entrance"].map { DemoStore.roomID($0) }),
+        Zone(id: "demo-zone-upstairs", name: "Demo Upstairs", rooms: [DemoStore.roomID("Office")]),
+    ]
+    private(set) var serviceGroups: [ServiceGroup] = [
+        ServiceGroup(id: "demo-group-lights", name: "Demo Lights (Synthetic)",
+                     services: [101, 102].map { DemoStore.serviceID(of: String(format: "D3E0DE00-0000-4000-8000-%012d", $0)) }),
+    ]
     private(set) var scenes: [Scene] = DemoStore.makeScenes()
     private(set) var automations: [Automation] = DemoStore.makeAutomations()
+    /// Counts what the demo creates, so each new room, zone, group or scene gets an id of its own.
     private var created = 0
-    private var addedRooms = 0
     private(set) var lastSeq = 0
     private(set) var lastEventAt: Date?
     private(set) var lastRefresh: [String: Any]?
@@ -91,6 +118,13 @@ final class DemoStore: WingmanStore {
 
     // MARK: WingmanStore
 
+    func name(of id: String) -> String? {
+        if let accessory = accessories.first(where: { $0.id == id || Self.serviceID(of: $0.id) == id }) { return accessory.name }
+        let named: [(String, String)] = (rooms + [Self.defaultRoom]).map { ($0.id, $0.name) } + zones.map { ($0.id, $0.name) }
+            + serviceGroups.map { ($0.id, $0.name) } + scenes.map { ($0.id, $0.name) } + automations.map { ($0.id, $0.name) }
+        return named.first { $0.0 == id }?.1
+    }
+
     func statusJSON() -> [String: Any] {
         var status: [String: Any] = [
             "demo": true, "authorization": "demo", "homesLoaded": true, "homes": 1,
@@ -105,9 +139,13 @@ final class DemoStore: WingmanStore {
         [[
             "id": Self.homeID, "name": Self.homeName, "primary": true, "demo": true, "editable": true,
             "rooms": rooms.map { room in
-                ["id": room.id, "name": room.name, "accessories": accessories.filter { $0.room == room.name }.count] as [String: Any]
+                ["id": room.id, "name": room.name, "accessories": accessories.filter { $0.roomID == room.id }.count] as [String: Any]
             },
-            "zones": [] as [Any],
+            "defaultRoom": ["id": Self.defaultRoom.id, "name": Self.defaultRoom.name],
+            "zones": zones.map { zone in
+                ["id": zone.id, "name": zone.name, "rooms": zone.rooms.compactMap(roomName), "roomIDs": zone.rooms] as [String: Any]
+            },
+            "serviceGroups": serviceGroups.map { ["id": $0.id, "name": $0.name, "services": $0.services] as [String: Any] },
             "scenes": scenes.map { ["name": $0.name, "type": $0.type, "actions": $0.actions.count] as [String: Any] },
             "accessories": accessories.map(accessoryJSON),
         ]]
@@ -145,7 +183,8 @@ final class DemoStore: WingmanStore {
         guard let slot = found.match else { return ["error": found.problem ?? "no characteristic \(type)"] }
         let characteristic = target.characteristics[slot]
         if !allowSecurity, Self.securityTypes.contains(characteristic.type) {
-            return ["error": "\(characteristic.description) is a security control; turn on Let bridges operate locks and doors in Wingman's settings"]
+            return ["error": "\(characteristic.description) is a security control; turn on Let bridges operate locks and doors in Wingman's settings",
+                    "setting": "allowSecurity"]
         }
         guard let accepted = Self.coerce(value, to: characteristic) else {
             return ["error": "\(characteristic.description) expects a \(characteristic.format) value"]
@@ -164,8 +203,8 @@ final class DemoStore: WingmanStore {
     func panelHomes() -> [[String: Any]] {
         [[
             "id": Self.homeID, "name": Self.homeName,
-            "rooms": rooms.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }.compactMap { room -> [String: Any]? in
-                let members = accessories.filter { $0.room == room.name }
+            "rooms": (rooms + [Self.defaultRoom]).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }.compactMap { room -> [String: Any]? in
+                let members = accessories.filter { ($0.roomID ?? Self.defaultRoom.id) == room.id }
                     .sorted { ($0.category, $0.name) < ($1.category, $1.name) }
                 guard !members.isEmpty else { return nil }
                 return [
@@ -219,11 +258,12 @@ final class DemoStore: WingmanStore {
 
     private func accessoryJSON(_ accessory: Accessory) -> [String: Any] {
         [
-            "id": accessory.id, "name": accessory.name, "room": accessory.room, "category": accessory.category,
+            "id": accessory.id, "name": accessory.name, "room": roomName(accessory.roomID) ?? Self.defaultRoom.name,
+            "roomID": accessory.roomID ?? NSNull(), "category": accessory.category,
             "reachable": accessory.reachable, "supportsIdentify": true, "bridged": false, "blocked": false,
             "manufacturer": "Wingman Demo", "model": "Synthetic", "firmware": "1.0", "demo": true,
             "services": [[
-                "id": accessory.id + "-service", "name": accessory.serviceName, "type": accessory.serviceType,
+                "id": Self.serviceID(of: accessory.id), "name": accessory.serviceName, "type": accessory.serviceType,
                 "description": accessory.serviceName, "primary": true,
                 "characteristics": accessory.characteristics.map { characteristic in
                     var json: [String: Any] = [
@@ -257,6 +297,12 @@ final class DemoStore: WingmanStore {
         }
     }
 
+    /// A room's name by id; nil is the Default Room.
+    private func roomName(_ id: String?) -> String? {
+        guard let id else { return Self.defaultRoom.name }
+        return rooms.first { $0.id == id }?.name
+    }
+
     fileprivate static func roomID(_ room: String) -> String {
         "demo-room-" + room.lowercased().replacingOccurrences(of: " ", with: "-")
     }
@@ -285,33 +331,33 @@ final class DemoStore: WingmanStore {
                            units: "percentage", minimum: 0, maximum: 100, value: value)
         }
         return [
-            Accessory(id: id(101), name: "Demo Floor Lamp", room: "Living Room", category: "Lightbulb", symbol: "lamp.floor",
+            Accessory(id: id(101), name: "Demo Floor Lamp", roomID: roomID("Living Room"), category: "Lightbulb", symbol: "lamp.floor",
                       serviceType: "00000043-0000-1000-8000-0026BB765291", serviceName: "Lightbulb",
                       characteristics: [power(1011, true), level(1012, 80)]),
-            Accessory(id: id(102), name: "Demo Ceiling Light", room: "Kitchen", category: "Lightbulb", symbol: "lightbulb",
+            Accessory(id: id(102), name: "Demo Ceiling Light", roomID: roomID("Kitchen"), category: "Lightbulb", symbol: "lightbulb",
                       serviceType: "00000043-0000-1000-8000-0026BB765291", serviceName: "Lightbulb",
                       characteristics: [power(1021, false), level(1022, 100)]),
-            Accessory(id: id(103), name: "Demo Coffee Plug", room: "Kitchen", category: "Outlet", symbol: "poweroutlet.type.b",
+            Accessory(id: id(103), name: "Demo Coffee Plug", roomID: roomID("Kitchen"), category: "Outlet", symbol: "poweroutlet.type.b",
                       serviceType: "00000047-0000-1000-8000-0026BB765291", serviceName: "Outlet",
                       characteristics: [power(1031, false)]),
-            Accessory(id: id(104), name: "Demo Thermostat", room: "Office", category: "Thermostat", symbol: "thermometer.medium",
+            Accessory(id: id(104), name: "Demo Thermostat", roomID: roomID("Office"), category: "Thermostat", symbol: "thermometer.medium",
                       serviceType: "0000004A-0000-1000-8000-0026BB765291", serviceName: "Thermostat", characteristics: [
                 Characteristic(id: id(1041), type: currentTemperature, description: "Current Temperature", properties: ["read", "events"],
                                format: "float", units: "celsius", minimum: 0, maximum: 100, value: 21.5),
                 Characteristic(id: id(1042), type: targetTemperature, description: "Target Temperature", properties: ["read", "write", "events"],
                                format: "float", units: "celsius", minimum: 10, maximum: 38, value: 21.0),
             ]),
-            Accessory(id: id(105), name: "Demo Motion Sensor", room: "Office", category: "Sensor", symbol: "sensor",
+            Accessory(id: id(105), name: "Demo Motion Sensor", roomID: roomID("Office"), category: "Sensor", symbol: "sensor",
                       serviceType: "00000085-0000-1000-8000-0026BB765291", serviceName: "Motion Sensor", reachable: false, characteristics: [
                 Characteristic(id: id(1051), type: motionDetected, description: "Motion Detected", properties: ["read", "events"], format: "bool", value: false),
             ]),
-            Accessory(id: id(106), name: "Demo Front Door Lock", room: "Entrance", category: "Door Lock", symbol: "lock",
+            Accessory(id: id(106), name: "Demo Front Door Lock", roomID: roomID("Entrance"), category: "Door Lock", symbol: "lock",
                       serviceType: "00000045-0000-1000-8000-0026BB765291", serviceName: "Lock Mechanism", characteristics: [
                 Characteristic(id: id(1061), type: lockCurrentState, description: "Lock Mechanism Current State", properties: ["read", "events"], format: "uint8", value: 1),
                 Characteristic(id: id(1062), type: lockTargetState, description: "Lock Mechanism Target State", properties: ["read", "write", "events"],
                                format: "uint8", minimum: 0, maximum: 1, value: 1),
             ]),
-            Accessory(id: id(107), name: "Demo Garage Door", room: "Entrance", category: "Garage Door Opener", symbol: "door.garage.closed",
+            Accessory(id: id(107), name: "Demo Garage Door", roomID: roomID("Entrance"), category: "Garage Door Opener", symbol: "door.garage.closed",
                       serviceType: "00000041-0000-1000-8000-0026BB765291", serviceName: "Garage Door Opener", characteristics: [
                 Characteristic(id: id(1071), type: currentDoorState, description: "Current Door State", properties: ["read", "events"], format: "uint8", value: 1),
                 Characteristic(id: id(1072), type: targetDoorState, description: "Target Door State", properties: ["read", "write", "events"],
@@ -365,9 +411,7 @@ extension DemoStore {
             guard let index = rooms.firstIndex(where: { $0.id == id }) else { return .notFound("no room \(id)") }
             // Accessories keep their room by name: two rooms of one name would be one.
             if rooms.contains(where: { $0.id != id && sameRoomName($0.name, name) }) { return .refused("\(Self.homeName) already has a room named \(name)") }
-            let old = rooms[index].name
             rooms[index].name = name
-            for slot in accessories.indices where accessories[slot].room == old { accessories[slot].room = name }
             return .ok(["renamed": id, "name": name, "demo": true])
 
         case .moveAccessory(let id, let room):
@@ -378,13 +422,95 @@ extension DemoStore {
                 target = existing
             } else {
                 // Not from the name: a renamed room keeps the id its first name gave it.
-                addedRooms += 1
-                target = Room(id: "demo-room-added-\(addedRooms)", name: room)
+                created += 1
+                target = Room(id: "demo-room-added-\(created)", name: room)
                 rooms.append(target)
                 added = true
             }
-            accessories[index].room = target.name
+            accessories[index].roomID = target.id
             return .ok(["accessory": id, "room": target.name, "roomID": target.id, "added": added, "demo": true])
+
+        case .createRoom(let home, let name):
+            guard home == nil || home == Self.homeID else { return .notFound("no home \(home ?? "")") }
+            if let existing = rooms.first(where: { sameRoomName($0.name, name) }) {
+                return .ok(["room": ["id": existing.id, "name": existing.name], "added": false, "demo": true])
+            }
+            created += 1
+            let room = Room(id: "demo-room-added-\(created)", name: name)
+            rooms.append(room)
+            return .ok(["room": ["id": room.id, "name": room.name], "added": true, "demo": true])
+
+        case .deleteRoom(let id):
+            guard let index = rooms.firstIndex(where: { $0.id == id }) else { return .notFound("no room \(id)") }
+            rooms.remove(at: index)
+            // As HomeKit does: its accessories go to the Default Room, and it leaves its zones.
+            for slot in accessories.indices where accessories[slot].roomID == id { accessories[slot].roomID = nil }
+            for slot in zones.indices { zones[slot].rooms.removeAll { $0 == id } }
+            return .ok(["room": id, "demo": true])
+
+        case .assignAccessory(let id, let roomID):
+            guard let index = accessories.firstIndex(where: { $0.id == id }) else { return .notFound("no accessory \(id)") }
+            let target = roomID == Self.defaultRoom.id ? nil : roomID
+            if let target, !rooms.contains(where: { $0.id == target }) { return .notFound("no room \(target) in \(Self.homeName)") }
+            accessories[index].roomID = target
+            return .ok(["accessory": id, "roomID": target ?? NSNull(), "demo": true])
+
+        case .createZone(let home, let name):
+            guard home == nil || home == Self.homeID else { return .notFound("no home \(home ?? "")") }
+            if let existing = zones.first(where: { sameRoomName($0.name, name) }) {
+                return .ok(["zone": ["id": existing.id, "name": existing.name], "added": false, "demo": true])
+            }
+            created += 1
+            let zone = Zone(id: "demo-zone-added-\(created)", name: name, rooms: [])
+            zones.append(zone)
+            return .ok(["zone": ["id": zone.id, "name": zone.name], "added": true, "demo": true])
+
+        case .renameZone(let id, let name):
+            guard let index = zones.firstIndex(where: { $0.id == id }) else { return .notFound("no zone \(id)") }
+            if zones.contains(where: { $0.id != id && sameRoomName($0.name, name) }) { return .refused("\(Self.homeName) already has a zone named \(name)") }
+            zones[index].name = name
+            return .ok(["zone": id, "name": name, "demo": true])
+
+        case .deleteZone(let id):
+            guard let index = zones.firstIndex(where: { $0.id == id }) else { return .notFound("no zone \(id)") }
+            zones.remove(at: index)
+            return .ok(["zone": id, "demo": true])
+
+        case .zoneRooms(let id, let add, let remove):
+            guard let index = zones.firstIndex(where: { $0.id == id }) else { return .notFound("no zone \(id)") }
+            if let missing = (add + remove).first(where: { roomID in !rooms.contains { $0.id == roomID } }) {
+                return .notFound("no room \(missing) in \(Self.homeName)")
+            }
+            zones[index].rooms = merged(zones[index].rooms, add: add, remove: remove)
+            return .ok(["zone": id, "roomIDs": zones[index].rooms, "demo": true])
+
+        case .createGroup(let home, let name, let services):
+            guard home == nil || home == Self.homeID else { return .notFound("no home \(home ?? "")") }
+            if let missing = services.first(where: { !hasService($0) }) { return .notFound("no service \(missing) in \(Self.homeName)") }
+            if serviceGroups.contains(where: { groupHoldsName(services: $0.services.count) && sameRoomName($0.name, name) }) { return .refused("\(Self.homeName) already has a group named \(name)") }
+            created += 1
+            let group = ServiceGroup(id: "demo-group-added-\(created)", name: name, services: services)
+            serviceGroups.append(group)
+            return .ok(["group": ["id": group.id, "name": group.name], "demo": true])
+
+        case .renameGroup(let id, let name):
+            guard let index = serviceGroups.firstIndex(where: { $0.id == id }) else { return .notFound("no group \(id)") }
+            if serviceGroups.contains(where: { $0.id != id && groupHoldsName(services: $0.services.count) && sameRoomName($0.name, name) }) {
+                return .refused("\(Self.homeName) already has a group named \(name)")
+            }
+            serviceGroups[index].name = name
+            return .ok(["group": id, "name": name, "demo": true])
+
+        case .deleteGroup(let id):
+            guard let index = serviceGroups.firstIndex(where: { $0.id == id }) else { return .notFound("no group \(id)") }
+            serviceGroups.remove(at: index)
+            return .ok(["group": id, "demo": true])
+
+        case .groupServices(let id, let add, let remove):
+            guard let index = serviceGroups.firstIndex(where: { $0.id == id }) else { return .notFound("no group \(id)") }
+            if let missing = (add + remove).first(where: { !hasService($0) }) { return .notFound("no service \(missing) in \(Self.homeName)") }
+            serviceGroups[index].services = merged(serviceGroups[index].services, add: add, remove: remove)
+            return .ok(["group": id, "services": serviceGroups[index].services, "demo": true])
 
         case .runScene(let id):
             guard let scene = scenes.first(where: { $0.id == id }) else { return .notFound("no scene \(id)") }
@@ -461,6 +587,10 @@ extension DemoStore {
             return .ok(["deleted": id, "demo": true])
         }
     }
+
+    /// Every demo accessory has one service, its id followed by "-service".
+    static func serviceID(of accessory: String) -> String { accessory + "-service" }
+    private func hasService(_ id: String) -> Bool { accessories.contains { Self.serviceID(of: $0.id) == id } }
 
     /// The accessory and characteristic slots an action names, as `write` finds them.
     private func locate(_ action: StructureAction) -> (accessory: Int, slot: Int)? {
@@ -595,4 +725,5 @@ final class DemoSwitchStore: WingmanStore {
     func automationsJSON() -> [[String: Any]] { current.automationsJSON() }
     func edit(_ edit: StructureEdit, allowSecurity: Bool) async -> StoreAnswer { await current.edit(edit, allowSecurity: allowSecurity) }
     func settingsChanged() { current.settingsChanged() }
+    func name(of id: String) -> String? { current.name(of: id) }
 }

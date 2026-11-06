@@ -39,9 +39,20 @@ final class MenuBarBridge {
         refresh()
     }
 
+    private var refreshPending = false
+
+    /// Rebuilt once per run-loop turn: a bridge's write reports both an activity entry and HomeKit's value event, and
+    /// the model walks every room's accessories.
     func refresh() {
-        let model = model()
-        menu?.setValue(model, forKey: "model")
+        guard !refreshPending else { return }
+        refreshPending = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.refreshPending = false
+                self.menu?.setValue(self.model(), forKey: "model")
+            }
+        }
     }
 
     private func perform(_ action: String) {
@@ -62,13 +73,15 @@ final class MenuBarBridge {
             guard parts.count == 3 else { return }
             let enabled = parts[2] == "1"
             switch parts[1] {
-            case "advertise", "allowChanges", "allowSecurity":
+            case "advertise", "allowSecurity":
                 UserDefaults.standard.set(enabled, forKey: String(parts[1]))
                 server?.applySettings()
-            case "allowStructure":
-                guard enabled != Settings.allowStructure else { return }
-                UserDefaults.standard.set(enabled, forKey: Settings.allowStructureKey)
-                // Bridges ask `/info` again and offer, or stop offering, the edits.
+            case "allowChanges", "allowStructure":
+                let key = parts[1] == "allowChanges" ? Settings.allowChangesKey : Settings.allowStructureKey
+                guard enabled != UserDefaults.standard.bool(forKey: key) else { return }
+                UserDefaults.standard.set(enabled, forKey: key)
+                server?.applySettings()
+                // Both feed `/info`'s `structure`: bridges ask again and offer, or stop offering, the edits.
                 if Settings.demoMode { demo.settingsChanged() } else { store.settingsChanged() }
             case "launchAtLogin": panel.setLaunchAtLogin(enabled)
             case "demoMode":
@@ -115,11 +128,13 @@ final class MenuBarBridge {
                 return json
             },
         ]
+        // The rows the Home tab shows: enough to see what a bridge just did without pushing the rooms out of view.
+        model["activity"] = server?.activity.entries.lazy.filter { ($0.demo ?? false) == demoMode }.prefix(8).map(\.panel) ?? []
         if let error = pairing.persistenceError { model["pairingError"] = error }
         if let error = panel.launchAtLoginError { model["settingsError"] = error }
         if let at = demoMode ? demo.lastEventAt : store.lastEventAt { model["lastEventAt"] = at.timeIntervalSince1970 }
         if let read = demoMode ? demo.lastRefresh : store.lastRefresh {
-            let failures = (read["failures"] as? [String: Int])?.values.reduce(0, +) ?? 0
+            let failures = ActivityFeed.failures(inRead: read)
             model["lastRead"] = "\(read["succeeded"] ?? 0) values read, \(failures) failed"
         }
         let (headline, level) = headline()
