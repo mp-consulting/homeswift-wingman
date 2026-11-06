@@ -1,4 +1,19 @@
-# Homeswift Wingman
+<p align="center">
+  <img src="docs/images/icon.svg" width="176" height="176" alt="Homeswift Wingman icon: a white house with wings, on an orange square">
+</p>
+
+<h1 align="center">Homeswift Wingman</h1>
+
+<p align="center">
+  Apple Home for Homeswift bridges, from a Mac menu bar.
+</p>
+
+<p align="center">
+  <a href="https://github.com/mp-consulting/homeswift-wingman/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mp-consulting/homeswift-wingman/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="macOS 27.0.1+ on Apple Silicon" src="https://img.shields.io/badge/macOS-27.0.1%2B%20%C2%B7%20Apple%20Silicon-blue">
+  <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6-orange">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-green"></a>
+</p>
 
 The Home app's accessories for [Homeswift](https://github.com/mp-consulting/homeswift), from a Mac. Wingman is a menu
 bar app that reads Apple Home through HomeKit (homes, rooms, accessories, their values as they change) and serves it
