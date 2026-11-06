@@ -212,7 +212,7 @@ The edits are structural, like the others: they need both settings and a user wh
 `home` is needed only when Wingman serves several homes: without it, a room or zone is created in the only one, and a
 group in its first service's. Names are trimmed and have 1 to 64 characters (else `400`). An unknown id is `404`
 (every id is checked before anything changes), a name another zone or group of the home has, case and accents
-aside, `422`, and so is a HomeKit refusal, with `done` as above.
+aside, `422` (a group with no services left, which the Home app does not show, holds no name), and so is a HomeKit refusal, with `done` as above.
 
 ## Building
 
