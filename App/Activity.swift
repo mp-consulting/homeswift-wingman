@@ -25,6 +25,8 @@ final class ActivityFeed {
         var summary: String
         var outcome: Outcome
         var milliseconds: Int
+        /// True for the demo home's: the panel shows the demo's in demo mode and the real home's otherwise.
+        var demo: Bool? = nil
 
         var panel: [String: Any] {
             ["date": date.timeIntervalSince1970, "bridge": bridge, "title": title, "summary": summary,

@@ -604,7 +604,7 @@ func expect(_ condition: Bool, _ message: String) throws {
         try expect(ActivityFeed(file: file).entries.isEmpty, "no file is an empty feed")
         func entry(_ index: Int) -> ActivityFeed.Entry {
             .init(date: Date(timeIntervalSince1970: Double(1_800_000_000 + index)), bridge: "Fixture", title: "Demo \(index)",
-                  summary: "Demo Room (Synthetic)", outcome: index == 1 ? .refused : .changed, milliseconds: index)
+                  summary: "Demo Room (Synthetic)", outcome: index == 1 ? .refused : .changed, milliseconds: index, demo: index == 2 ? true : nil)
         }
         func fileLines() throws -> [String] { try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map(String.init) }
         let feed = ActivityFeed(file: file, limit: 2)
@@ -613,7 +613,8 @@ func expect(_ condition: Bool, _ message: String) throws {
         try expect(try fileLines().count == 3, "each entry is appended as a line")
         let reopened = ActivityFeed(file: file, limit: 2)
         try expect(reopened.entries.map(\.title) == ["Demo 2", "Demo 1"] && reopened.entries[1].outcome == .refused
-                   && reopened.entries[0].date == Date(timeIntervalSince1970: 1_800_000_002), "a relaunch reads the latest entries back, newest first")
+                   && reopened.entries[0].date == Date(timeIntervalSince1970: 1_800_000_002) && reopened.entries[0].demo == true && reopened.entries[1].demo == nil,
+                   "a relaunch reads the latest entries back, newest first, the demo's still marked")
         let permissions = (try FileManager.default.attributesOfItem(atPath: file.path))[.posixPermissions] as? Int
         try expect(permissions == 0o600, "the file is the owner's only: \(String(permissions ?? 0, radix: 8))")
         for index in 3..<5 { reopened.record(entry(index)) }
@@ -702,10 +703,13 @@ func expect(_ condition: Bool, _ message: String) throws {
         // The panel's Activity: what the bridge asked, by name, newest first; the polls above are not in it.
         try expect((try await request("POST", "/write", #"{"accessory": "\#(lamp)", "characteristic": "Power State", "value": true}"#)).status.contains("200"), "a write")
         _ = try await request("POST", "/read")
-        let feed = server.activity.entries
+        _ = try await request("POST", "/write", #"{"accessory": "\#(lamp)", "characteristic": "Identify", "value": true}"#)
+        let identified = server.activity.entries[0]
+        try expect(identified.title == "Identified accessory" && identified.summary == "Demo Floor Lamp", "Identify says so: \(identified.title): \(identified.summary)")
+        let feed = Array(server.activity.entries.dropFirst())
         func line(_ index: Int) -> String { "\(feed[index].outcome.rawValue) \(feed[index].title): \(feed[index].summary)" }
         try expect(feed.count == 11 && feed.allSatisfy { $0.bridge == "Fixture" }, "one entry per request that asks for something, polls left out: \(feed.map(\.title))")
-        try expect(line(0).hasPrefix("failed Read all values: ") || line(0).hasPrefix("read Read all values: "), "Read All: \(line(0))")
+        try expect(line(0).hasPrefix("read Read all values: ") && line(0).contains(" read"), "Read All is a read, its failures counted: \(line(0))")
         try expect(line(1) == "changed Changed accessory: Demo Floor Lamp: Power State → on", "a write by name, a switch as on: \(line(1))")
         try expect(line(3).hasPrefix("failed Renamed group: Demo Pair (Synthetic) → Demo Lights (Synthetic) · "), "a HomeKit refusal says why: \(line(3))")
         try expect(line(4) == "changed Created group: Demo Pair (Synthetic): Demo Floor Lamp", "a group's services by accessory: \(line(4))")

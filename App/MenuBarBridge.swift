@@ -129,7 +129,7 @@ final class MenuBarBridge {
             },
         ]
         // The rows the Home tab shows: enough to see what a bridge just did without pushing the rooms out of view.
-        model["activity"] = server?.activity.entries.prefix(8).map(\.panel) ?? []
+        model["activity"] = server?.activity.entries.lazy.filter { ($0.demo ?? false) == demoMode }.prefix(8).map(\.panel) ?? []
         if let error = pairing.persistenceError { model["pairingError"] = error }
         if let error = panel.launchAtLoginError { model["settingsError"] = error }
         if let at = demoMode ? demo.lastEventAt : store.lastEventAt { model["lastEventAt"] = at.timeIntervalSince1970 }

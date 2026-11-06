@@ -103,11 +103,14 @@ final class LocalServer {
     var onChange: (() -> Void)?
     /// What paired bridges asked for, for the panel.
     let activity: ActivityFeed
+    /// Whether the store serves the synthetic home: its entries are kept apart from the real home's.
+    private let demoMode: () -> Bool
     /// The certificate's SHA-256 (lowercase hex), for the menu bar panel.
     let fingerprint: String
 
     convenience init(store: any WingmanStore, pairing: Pairing, identity: Identity) {
         self.init(store: store, pairing: pairing, fingerprint: identity.fingerprint, activity: ActivityFeed(file: ActivityFeed.appFile),
+                  demoMode: { Settings.demoMode },
                   configuration: { Configuration(port: Settings.port, advertise: Settings.advertise) },
                   changesAllowed: { Settings.allowChanges }, securityAllowed: { Settings.allowSecurity },
                   structureAllowed: { Settings.allowStructure }, makeParameters: {
@@ -120,13 +123,14 @@ final class LocalServer {
 
     /// Dependency injection keeps network tests on loopback without HomeKit, defaults or Keychain access.
     init(store: any WingmanStore, pairing: Pairing, fingerprint: String, activity: ActivityFeed = ActivityFeed(),
-         configuration: @escaping () -> Configuration, changesAllowed: @escaping () -> Bool,
+         demoMode: @escaping () -> Bool = { false }, configuration: @escaping () -> Configuration, changesAllowed: @escaping () -> Bool,
          securityAllowed: @escaping () -> Bool = { false }, structureAllowed: @escaping () -> Bool = { false },
          limits: Limits = Limits(), makeParameters: @escaping () -> NWParameters) {
         self.store = store
         self.pairing = pairing
         self.fingerprint = fingerprint
         self.activity = activity
+        self.demoMode = demoMode
         self.configuration = configuration
         self.changesAllowed = changesAllowed
         self.securityAllowed = securityAllowed
@@ -410,8 +414,10 @@ final class LocalServer {
                 guard !Task.isCancelled, pairing.contains(bridge.id) else { close(connection); return }
                 let result = await store.readAll()
                 let failures = ActivityFeed.failures(inRead: result)
-                note(bridge.name, "Read all values", "\(result["succeeded"] ?? 0) read" + (failures > 0 ? ", \(failures) failed" : ""),
-                     failures > 0 ? .failed : .read, since: started)
+                let succeeded = result["succeeded"] as? Int ?? 0
+                // A home always has some accessory not responding: a read fails only when nothing could be read.
+                note(bridge.name, "Read all values", "\(succeeded) read" + (failures > 0 ? ", \(failures) failed" : ""),
+                     succeeded == 0 && failures > 0 ? .failed : .read, since: started)
                 send(result, on: connection)
             }
         case ("POST", "/write"):
@@ -435,8 +441,9 @@ final class LocalServer {
                                                allowSecurity: securityAllowed())
                 let target = result["accessory"] as? String ?? store.name(of: accessory) ?? accessory
                 let what = result["characteristic"] as? String ?? characteristic
-                note(bridge.name, "Changed accessory",
-                     about: result["error"] == nil ? "\(target): \(what) → \(ActivityFeed.describe(result["written"] ?? value))" : target,
+                let identify = what == "Identify"
+                note(bridge.name, identify ? "Identified accessory" : "Changed accessory",
+                     about: result["error"] == nil && !identify ? "\(target): \(what) → \(ActivityFeed.describe(result["written"] ?? value))" : target,
                      answer: result, since: started)
                 send(result, status: result["error"] == nil ? "200 OK" : "422 Unprocessable Content", on: connection)
             }
@@ -500,7 +507,7 @@ final class LocalServer {
 
     private func note(_ bridge: String, _ title: String, _ summary: String, _ outcome: ActivityFeed.Entry.Outcome, since started: Date) {
         activity.record(.init(date: started, bridge: bridge, title: title, summary: summary, outcome: outcome,
-                              milliseconds: Int((Date().timeIntervalSince(started) * 1000).rounded())))
+                              milliseconds: Int((Date().timeIntervalSince(started) * 1000).rounded()), demo: demoMode() ? true : nil))
     }
 
     private func pair(_ body: Data, from connection: NWConnection, started: Date) {
@@ -508,7 +515,8 @@ final class LocalServer {
             send(["error": #"expected {"code", "name"}"#], status: "400 Bad Request", on: connection)
             return
         }
-        let name = (request["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? Self.describe(connection.endpoint)
+        // Cut as Pairing cuts a bridge's name: before pairing, it is anyone's.
+        let name = (request["name"] as? String).flatMap { $0.isEmpty ? nil : String($0.prefix(80)) } ?? Self.describe(connection.endpoint)
         switch pairing.pair(code: code, name: name) {
         case .paired(let token, let bridge):
             NSLog("Wingman: paired \(bridge.name) from \(Self.describe(connection.endpoint))")

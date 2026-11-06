@@ -480,10 +480,13 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
             add(label("No homes to show. Allow Home access in System Settings › Privacy & Security › Home, or try Wingman with a synthetic home.", small: true))
             add(button("Try Demo Mode", "setting:demoMode:1"))
         }
+        // First: what bridges just did stays in view, and Refresh stays with the rooms it reads, which can run to dozens.
+        activity()
+        let divider = NSBox()
+        divider.boxType = .separator
+        add(divider)
         row("Accessories", button("Refresh", "read"))
         if let read = model["lastRead"] as? String { add(label(read, small: true)) }
-        // Above the rooms, which can run to dozens: what bridges just did stays in view.
-        activity()
         for home in model["homes"] as? [[String: Any]] ?? [] {
             section(home["name"] as? String ?? "Home")
             for room in home["rooms"] as? [[String: Any]] ?? [] {
@@ -600,7 +603,8 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
 
     private func renderActivity() {
         let entries = model["activity"] as? [[String: Any]] ?? []
-        let signature = entries as NSArray
+        // The day too: after midnight, yesterday's rows show their date instead of a bare time.
+        let signature = [entries, Calendar.current.startOfDay(for: Date()).timeIntervalSince1970] as NSArray
         if let renderedActivity, renderedActivity.isEqual(signature) { return }
         renderedActivity = signature
         activityRows.arrangedSubviews.forEach { activityRows.removeArrangedSubview($0); $0.removeFromSuperview() }
@@ -616,7 +620,8 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
     static func activityStatus(_ outcome: String) -> (symbol: String, color: NSColor, label: String) {
         switch outcome {
         case "read": ("circle.fill", .systemGreen, "Read")
-        case "refused": ("hand.raised.fill", .systemOrange, "Refused")
+        // Grey, not orange: a switch saying no is expected, and must not look like a change.
+        case "refused": ("hand.raised.fill", .secondaryLabelColor, "Refused")
         case "failed": ("xmark.circle.fill", .systemRed, "Failed")
         default: ("diamond.fill", .systemOrange, "Changed")
         }
