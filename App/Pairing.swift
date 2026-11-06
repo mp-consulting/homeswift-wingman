@@ -39,8 +39,13 @@ final class Pairing {
     private var closing: Timer?
     private let file: URL
 
-    init(directory: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.mpconsulting.HomeswiftWingman", isDirectory: true),
+    /// Where the app keeps its pairings, and its activity beside them.
+    nonisolated static var defaultDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.mpconsulting.HomeswiftWingman", isDirectory: true)
+    }
+
+    init(directory: URL = Pairing.defaultDirectory,
          now: @escaping () -> Date = Date.init,
          writeFile: @escaping (Data, URL) throws -> Void = Pairing.write) {
         self.now = now

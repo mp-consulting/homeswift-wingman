@@ -85,6 +85,7 @@ func expect(_ condition: Bool, _ message: String) throws {
         try pairing()
         try await network()
         try await homeLinkRoutes()
+        try activityFile()
         try await demo()
         try await demoStructure()
         try await demoHomeLink()
@@ -604,6 +605,36 @@ func expect(_ condition: Bool, _ message: String) throws {
 
     /// The Home Link's reads and edits through the server, on the demo home: the same settings gate them as the other
     /// edits, and a bridge sees each one as a homes event. Loopback without TLS, as `network`: TLS needs the keychain.
+    @MainActor static func activityFile() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("activity.jsonl")
+        try expect(ActivityFeed(file: file).entries.isEmpty, "no file is an empty feed")
+        func entry(_ index: Int) -> ActivityFeed.Entry {
+            .init(date: Date(timeIntervalSince1970: Double(1_800_000_000 + index)), bridge: "Fixture", title: "Demo \(index)",
+                  summary: "Demo Room (Synthetic)", outcome: index == 1 ? .refused : .changed, milliseconds: index)
+        }
+        func fileLines() throws -> [String] { try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map(String.init) }
+        let feed = ActivityFeed(file: file, limit: 2)
+        for index in 0..<3 { feed.record(entry(index)) }
+        feed.flush()
+        try expect(try fileLines().count == 3, "each entry is appended as a line")
+        let reopened = ActivityFeed(file: file, limit: 2)
+        try expect(reopened.entries.map(\.title) == ["Demo 2", "Demo 1"] && reopened.entries[1].outcome == .refused
+                   && reopened.entries[0].date == Date(timeIntervalSince1970: 1_800_000_002), "a relaunch reads the latest entries back, newest first")
+        let permissions = (try FileManager.default.attributesOfItem(atPath: file.path))[.posixPermissions] as? Int
+        try expect(permissions == 0o600, "the file is the owner's only: \(String(permissions ?? 0, radix: 8))")
+        for index in 3..<5 { reopened.record(entry(index)) }
+        reopened.flush()
+        try expect(try fileLines().count == 2 && (try fileLines().last ?? "").contains("Demo 4"), "past twice the limit, the file keeps only the feed")
+        let handle = try FileHandle(forWritingTo: file)
+        handle.seekToEndOfFile()
+        handle.write(Data(#"{"title": "cut sh"#.utf8))
+        try handle.close()
+        try expect(ActivityFeed(file: file, limit: 2).entries.map(\.title) == ["Demo 4", "Demo 3"], "a line a crash cut short is skipped")
+        print("PASS: the activity feed is appended to a file a relaunch reads, owner-only, kept small, a cut line skipped")
+    }
+
     @MainActor static func homeLinkRoutes() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -118,9 +118,9 @@ import AppKit
                    && text("No effect while bridges can’t change accessories."), "notes follow the switches and the Local Network block")
         try expect(PanelFixtures.descendants(panel.view).contains { $0.identifier?.rawValue == "localNetworkSettings" }, "the block offers its setting")
         panel.model = PanelFixtures.model
-        try PanelFixtures.click("Bridges", in: panel)
+        try PanelFixtures.click("Home", in: panel)
         let rows = PanelFixtures.descendants(panel.view).compactMap { $0.accessibilityLabel() }.filter { $0.contains(", by Demo Bridge, ") }
-        try expect(text("ACTIVITY") && rows.count == PanelFixtures.activity.count, "the Bridges tab lists the activity, one row each: \(rows.count)")
+        try expect(text("ACTIVITY") && rows.count == PanelFixtures.activity.count, "the Home tab lists the activity above the rooms, one row each: \(rows.count)")
         try expect(rows.first?.hasPrefix("Changed: Changed accessory, Floor Lamp: Power State → on") == true
                    && rows.contains { $0.hasPrefix("Refused: Renamed room") } && rows.contains { $0.hasPrefix("Failed: Changed accessory") }
                    && rows.contains { $0.hasPrefix("Read: Read all values") }, "each row says its outcome in words: \(rows.first ?? "")")

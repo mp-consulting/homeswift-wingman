@@ -2,12 +2,12 @@ import Foundation
 
 /// What paired bridges asked Wingman to do, newest first, for the panel's Activity section: pairing, Read All,
 /// accessory changes, scene runs and edits to the home, with Wingman's refusals. The reads a bridge makes all the time
-/// (`/homes`, `/events`, `/scenes`) are left out, or they would bury the rest. Kept in memory: it is what happened
-/// since Wingman started.
+/// (`/homes`, `/events`, `/scenes`) are left out, or they would bury the rest. Saved beside the pairings
+/// (`activity.jsonl`, one entry a line), so a relaunch keeps it.
 @MainActor
 final class ActivityFeed {
-    struct Entry {
-        enum Outcome: String {
+    struct Entry: Codable {
+        enum Outcome: String, Codable {
             /// Read the home without changing it.
             case read
             case changed
@@ -35,16 +35,82 @@ final class ActivityFeed {
     private(set) var entries: [Entry] = []
     let limit: Int
     var onChange: (() -> Void)?
+    /// Nil keeps the feed in memory (tests).
+    private let file: URL?
+    /// The file's lines, one entry each, oldest first. Each entry is appended; past twice the limit, the file is
+    /// written again with the entries kept, so it stays small.
+    private var lines = 0
+    /// Saves run here, in order, so a bridge's answer never waits for the disk.
+    private let saves = DispatchQueue(label: "Wingman.activity", qos: .utility)
 
-    init(limit: Int = 100) {
+    /// Where the app keeps it: beside `bridges.json`.
+    static var appFile: URL { Pairing.defaultDirectory.appendingPathComponent("activity.jsonl") }
+
+    init(file: URL? = nil, limit: Int = 100) {
+        self.file = file
         self.limit = limit
+        // A missing file starts an empty feed, and an unreadable line (one a crash cut short) is skipped: the feed is a
+        // record, not state anything depends on.
+        if let file, let data = try? Data(contentsOf: file) {
+            let saved = data.split(separator: 0x0A)
+            lines = saved.count
+            entries = Array(saved.compactMap { try? Self.decoder.decode(Entry.self, from: Data($0)) }.suffix(limit).reversed())
+        }
     }
 
     func record(_ entry: Entry) {
         entries.insert(entry, at: 0)
         if entries.count > limit { entries.removeLast(entries.count - limit) }
+        if let file {
+            lines += 1
+            if lines > 2 * limit {
+                let kept = Data(entries.reversed().compactMap(Self.line).joined())
+                lines = entries.count
+                saves.async { Self.save { try Pairing.write(kept, to: file) } }
+            } else if let line = Self.line(entry) {
+                saves.async { Self.save { try Self.append(line, to: file) } }
+            }
+        }
         onChange?()
     }
+
+    /// Waits for the saves made so far to reach the file.
+    func flush() { saves.sync {} }
+
+    private static func line(_ entry: Entry) -> Data? {
+        guard var line = try? encoder.encode(entry) else { return nil }
+        line.append(0x0A)
+        return line
+    }
+
+    nonisolated private static func save(_ write: () throws -> Void) {
+        do { try write() } catch { NSLog("Wingman: could not save the activity: \(error)") }
+    }
+
+    /// One line at the end, owner-only like the pairings: an `O_APPEND` write of one line is never interleaved.
+    nonisolated private static func append(_ line: Data, to file: URL) throws {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let fd = Darwin.open(file.path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { Darwin.close(fd) }
+        let written = line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        guard written == line.count else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    }
+
+    private static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        // The same key order on every line, for a person reading the file.
+        encoder.outputFormatting = .sortedKeys
+        return encoder
+    }()
+
+    private static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
 
     /// The outcome an answer's status line means: 403 is Wingman's settings, any other failure HomeKit's or the request's.
     static func outcome(status: String, success: Entry.Outcome = .changed) -> Entry.Outcome {

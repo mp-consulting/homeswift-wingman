@@ -102,12 +102,12 @@ final class LocalServer {
     private(set) var state = "starting"
     var onChange: (() -> Void)?
     /// What paired bridges asked for, for the panel.
-    let activity = ActivityFeed()
+    let activity: ActivityFeed
     /// The certificate's SHA-256 (lowercase hex), for the menu bar panel.
     let fingerprint: String
 
     convenience init(store: any WingmanStore, pairing: Pairing, identity: Identity) {
-        self.init(store: store, pairing: pairing, fingerprint: identity.fingerprint,
+        self.init(store: store, pairing: pairing, fingerprint: identity.fingerprint, activity: ActivityFeed(file: ActivityFeed.appFile),
                   configuration: { Configuration(port: Settings.port, advertise: Settings.advertise) },
                   changesAllowed: { Settings.allowChanges }, securityAllowed: { Settings.allowSecurity },
                   structureAllowed: { Settings.allowStructure }, makeParameters: {
@@ -119,13 +119,14 @@ final class LocalServer {
     }
 
     /// Dependency injection keeps network tests on loopback without HomeKit, defaults or Keychain access.
-    init(store: any WingmanStore, pairing: Pairing, fingerprint: String,
+    init(store: any WingmanStore, pairing: Pairing, fingerprint: String, activity: ActivityFeed = ActivityFeed(),
          configuration: @escaping () -> Configuration, changesAllowed: @escaping () -> Bool,
          securityAllowed: @escaping () -> Bool = { false }, structureAllowed: @escaping () -> Bool = { false },
          limits: Limits = Limits(), makeParameters: @escaping () -> NWParameters) {
         self.store = store
         self.pairing = pairing
         self.fingerprint = fingerprint
+        self.activity = activity
         self.configuration = configuration
         self.changesAllowed = changesAllowed
         self.securityAllowed = securityAllowed

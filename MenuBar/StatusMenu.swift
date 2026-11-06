@@ -338,9 +338,9 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         // Value events update the header/footer without replacing rows under the pointer.
         let keys: [String]
         switch selectedTab {
-        case 1: keys = ["pairingCode", "pairingUntil", "serving", "bridges", "fingerprint", "pairingError", "demo", "demoLog", "demoBusy", "demoPaired", "activity"]
+        case 1: keys = ["pairingCode", "pairingUntil", "serving", "bridges", "fingerprint", "pairingError", "demo", "demoLog", "demoBusy", "demoPaired"]
         case 2: keys = ["advertise", "advertisementMissing", "allowChanges", "allowSecurity", "allowStructure", "launchAtLogin", "demo", "port", "listening", "settingsError", "automaticUpdateChecks", "updateEnabled", "updateBlocker", "updateStatus", "updateBusy", "updateAvailable", "updateProgress"]
-        default: keys = ["homes", "lastRead", "demo", "offerDemo"]
+        default: keys = ["homes", "lastRead", "demo", "offerDemo", "activity"]
         }
         let content = model.filter { keys.contains($0.key) }
         let signature = NSDictionary(dictionary: ["tab": selectedTab, "rooms": expandedRooms.sorted(), "removal": pendingRemoval ?? "", "content": content])
@@ -473,6 +473,8 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
         }
         row("Accessories", button("Refresh", "read"))
         if let read = model["lastRead"] as? String { add(label(read, small: true)) }
+        // Above the rooms, which can run to dozens: what bridges just did stays in view.
+        activity()
         for home in model["homes"] as? [[String: Any]] ?? [] {
             section(home["name"] as? String ?? "Home")
             for room in home["rooms"] as? [[String: Any]] ?? [] {
@@ -573,7 +575,6 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
             add(value)
             add(button("Copy fingerprint", "copyFingerprint"))
         }
-        activity()
     }
 
     /// What paired bridges asked for, newest first: one line each, a failure's reason on two.
@@ -584,8 +585,11 @@ final class WingmanPopoverController: NSViewController, NSTextFieldDelegate {
             add(label("Nothing yet. What paired bridges change in your home shows here.", small: true))
             return
         }
-        for entry in entries.prefix(20) { add(Self.activityRow(entry), verticalPadding: 3) }
+        for entry in entries.prefix(Self.activityRows) { add(Self.activityRow(entry), verticalPadding: 3) }
     }
+
+    /// The latest few: enough to see what a bridge just did without pushing the rooms out of the panel.
+    static let activityRows = 8
 
     /// A shape as well as a colour, so the outcome reads without telling green from orange.
     static func activityStatus(_ outcome: String) -> (symbol: String, color: NSColor, label: String) {
