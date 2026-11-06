@@ -17,7 +17,9 @@ TAG="v$VERSION"
 [ -z "$(git status --porcelain)" ] || { echo "Commit or stash your changes first"; exit 1; }
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && { echo "$TAG exists already"; exit 1; }
 
-CONFIGURATION=Release Scripts/build.sh
+# From bin/dev's copy outside Documents: in the checkout, xcodebuild can deadlock at startup on a coordinated read
+# of the project (Xcode 27.2), before it compiles anything.
+CONFIGURATION=Release bin/dev build
 DIST="$HOME/Library/Caches/HomeswiftWingman/dist"
 DMG="$DIST/HomeswiftWingman-$VERSION.dmg"
 Scripts/make-dmg.sh "$DIST/Homeswift Wingman.app" "$DMG"
