@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-11
+
 - Read missing accessory serial numbers automatically and notify paired bridges when they arrive, so Home Link does not mistake accessories already in Apple Home for absent ones. Retry failed reads on inventory requests and reachability changes, without repeatedly reading identities already known.
 
 ## [0.4.0] - 2026-11-06
