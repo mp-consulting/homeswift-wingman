@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+- Read missing accessory serial numbers automatically and notify paired bridges when they arrive, so Home Link does not mistake accessories already in Apple Home for absent ones. Retry failed reads on inventory requests and reachability changes, without repeatedly reading identities already known.
+
 ## [0.4.0] - 2026-11-06
 
 - A refusal by one of Wingman's switches names it in `setting` (`allowChanges`, `allowStructure`, `allowSecurity`), so a bridge can say which to turn on.

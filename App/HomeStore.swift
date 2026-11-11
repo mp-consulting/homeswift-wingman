@@ -44,6 +44,8 @@ final class HomeStore: NSObject, WingmanStore {
     private(set) var lastRefresh: [String: Any]?
     private var notificationErrors: [String: Int] = [:]
     private var lastValueChange: [UUID: Date] = [:]
+    private var identityReads: Set<UUID> = []
+    private var identityReadAttempts: [UUID: Date] = [:]
     /// HomeKit reports one edit in Home as several delegate calls: they make one event of each kind and home a second
     /// later. Keyed by kind and home id, so two homes changing in the same second make two events.
     private var pendingStructureChanges: [String: (home: String, accessory: String)] = [:]
@@ -87,12 +89,35 @@ final class HomeStore: NSObject, WingmanStore {
 
     private func watch(_ accessory: HMAccessory) {
         accessory.delegate = self
+        readMissingIdentity(of: accessory)
         for service in accessory.services {
             for characteristic in service.characteristics
             where characteristic.properties.contains(HMCharacteristicPropertySupportsEventNotification) && !characteristic.isNotificationEnabled {
                 characteristic.enableNotification(true) { [weak self] error in
                     guard let error else { return }
                     MainActor.assumeIsolated { self?.notificationErrors[Self.describe(error), default: 0] += 1 }
+                }
+            }
+        }
+    }
+
+    /// HomeKit may load the Serial Number characteristic without its value. It does not send notifications for
+    /// Accessory Information, so bridges otherwise mistake a present accessory for one absent from the Home.
+    private func readMissingIdentity(of accessory: HMAccessory) {
+        for characteristic in accessory.services.filter({ $0.serviceType == HMServiceTypeAccessoryInformation }).flatMap(\.characteristics)
+        where characteristic.characteristicType == HMCharacteristicTypeSerialNumber
+            && characteristic.properties.contains(HMCharacteristicPropertyReadable) {
+            if let serial = characteristic.value as? String, !serial.isEmpty { continue }
+            let id = characteristic.uniqueIdentifier
+            guard !identityReads.contains(id), Date().timeIntervalSince(identityReadAttempts[id] ?? .distantPast) >= 30 else { continue }
+            identityReads.insert(id)
+            identityReadAttempts[id] = Date()
+            characteristic.readValue { [weak self] error in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.identityReads.remove(id)
+                    guard error == nil, let serial = characteristic.value as? String, !serial.isEmpty else { return }
+                    self.structureChanged("homes", self.home(of: accessory), accessory)
                 }
             }
         }
@@ -189,7 +214,8 @@ final class HomeStore: NSObject, WingmanStore {
             "finishedAt": ISO8601DateFormatter().string(from: Date()),
         ]
         lastRefresh = result
-        onChange?()
+        // Explicit reads can recover identities too; bridges need a fresh inventory, not just refreshed panel data.
+        structureChanged("homes", nil)
         return result
     }
 
@@ -264,7 +290,9 @@ final class HomeStore: NSObject, WingmanStore {
     }
 
     func homesJSON() -> [[String: Any]] {
-        homes.map { home in
+        // Retry failed identity reads on the next inventory request, with a per-characteristic cooldown.
+        for accessory in homes.flatMap(\.accessories) { readMissingIdentity(of: accessory) }
+        return homes.map { home in
             // Each HomeKit property read copies: read once here.
             let defaultRoom = home.roomForEntireHome()
             let rooms = home.rooms
@@ -501,7 +529,10 @@ extension HomeStore: @preconcurrency HMAccessoryDelegate {
         record(characteristic, of: accessory)
     }
 
-    func accessoryDidUpdateReachability(_ accessory: HMAccessory) { structureChanged("homes", home(of: accessory), accessory) }
+    func accessoryDidUpdateReachability(_ accessory: HMAccessory) {
+        readMissingIdentity(of: accessory)
+        structureChanged("homes", home(of: accessory), accessory)
+    }
     func accessoryDidUpdateName(_ accessory: HMAccessory) { structureChanged("homes", home(of: accessory), accessory) }
     /// A service's name is in `/homes`, and is what a service group shows.
     func accessory(_ accessory: HMAccessory, didUpdateNameFor service: HMService) { structureChanged("homes", home(of: accessory), accessory) }
